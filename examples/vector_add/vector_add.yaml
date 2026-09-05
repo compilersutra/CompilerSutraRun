@@ -1,0 +1,13 @@
+name: vector_add
+operation: vector_add
+dimensions:
+  count: 1048576
+dtype:
+  input: fp32
+  output: fp32
+execution:
+  warmup: 10
+  iterations: 100
+validation:
+  enabled: true
+  tolerance: 1.0e-5
