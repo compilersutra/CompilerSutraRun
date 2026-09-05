@@ -14,8 +14,9 @@ This project does **not** replace Vulkan, CUDA, HIP, D3D12, LLVM, MLIR, SPIR-V T
 | Phase | Status |
 |-------|--------|
 | Phase 0 — Assessment | Done |
-| Phase 1 — Common foundation | In progress |
-| Phase 2 — Vulkan `vector_add` | Planned |
+| Phase 1 — Common foundation | Done |
+| Phase 2 — Vulkan `vector_add` | Done (real GPU execute + validate + timestamp) |
+| Phase 3 — Vulkan matmul | Planned |
 | Phase 4 — CUDA | Planned |
 | Phase 7 — D3D12 | Planned |
 
@@ -25,9 +26,10 @@ This project does **not** replace Vulkan, CUDA, HIP, D3D12, LLVM, MLIR, SPIR-V T
 cmake --preset default
 cmake --build --preset default
 ctest --preset default
-./build/bin/csrun --help
 ./build/bin/csrun --list-backends
-./build/bin/csrun examples/vector_add/vector_add.yaml --inspect
+./build/bin/csrun --list-devices
+./build/bin/csrun examples/vector_add/vector_add.yaml --backend vulkan
+./build/bin/csrun examples/vector_add/vector_add.yaml --format json
 ```
 
 ## Layout

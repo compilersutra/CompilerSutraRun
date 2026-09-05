@@ -24,6 +24,19 @@ csrun::LogLevel parseLogLevel(const std::string &text) {
   return csrun::LogLevel::Info;
 }
 
+void printTextResult(const csrun::RunResult &r) {
+  std::cout << "CompilerSutraRun\n";
+  std::cout << "Workload:    " << r.workloadName << " (" << r.operation << ")\n";
+  std::cout << "Backend:     " << csrun::toString(r.backend) << '\n';
+  std::cout << "Device:      " << r.deviceName << '\n';
+  std::cout << "Compiler:    " << r.compilerName << '\n';
+  std::cout << "Timing:      median=" << r.timing.medianMs << " ms"
+            << " source=" << csrun::toString(r.timing.source) << '\n';
+  std::cout << "Validation:  " << csrun::toString(r.validation) << '\n';
+  if (!r.note.empty())
+    std::cout << "Note:        " << r.note << '\n';
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -46,10 +59,10 @@ int main(int argc, char **argv) {
   app.add_option("--log-level", logLevel, "error|warn|info|debug|trace")
       ->check(CLI::IsMember({"error", "warn", "info", "debug", "trace"}));
   app.add_flag("--list-backends", listBackends, "List registered backends");
-  app.add_flag("--list-devices", listDevices, "List devices (Phase 2+)");
+  app.add_flag("--list-devices", listDevices, "List devices from available backends");
   app.add_flag("--inspect", inspectOnly, "Parse and report workload without GPU execute");
-  app.add_flag("--validate", validate, "Run validation (Phase 2+)");
-  app.add_flag("--benchmark", benchmark, "Run benchmark (Phase 2+)");
+  app.add_flag("--validate", validate, "Enable validation (default on for run)");
+  app.add_flag("--benchmark", benchmark, "Enable benchmarking (default on for run)");
   app.add_flag("--all", allBackends, "Run across all available backends (Phase 6)");
 
   CLI11_PARSE(app, argc, argv);
@@ -68,23 +81,6 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (listDevices) {
-    std::cout << "DEVICE_NOT_FOUND: device enumeration requires a built backend "
-                 "(Vulkan Phase 2)\n";
-    return 2;
-  }
-
-  if (workloadPath.empty()) {
-    std::cerr << "error: workload path required (or use --list-backends)\n";
-    return 1;
-  }
-
-  auto workload = runtime.loadWorkload(workloadPath);
-  if (!workload) {
-    std::cerr << workload.error().toString() << '\n';
-    return 1;
-  }
-
   std::optional<csrun::BackendType> forced;
   if (!backendName.empty()) {
     forced = csrun::parseBackendType(backendName);
@@ -94,14 +90,41 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (validate || benchmark || allBackends) {
-    std::cerr << "UNIMPLEMENTED: --validate/--benchmark/--all require Phase 2+ GPU backends\n";
+  if (listDevices) {
+    auto devices = runtime.listDevices(forced);
+    if (!devices) {
+      std::cerr << devices.error().toString() << '\n';
+      return 2;
+    }
+    std::cout << "Backend\tIndex\tDevice\n";
+    for (const auto &d : devices.value()) {
+      std::cout << csrun::toString(d.backend) << '\t' << d.index << '\t' << d.name << '\n';
+    }
+    return 0;
+  }
+
+  if (workloadPath.empty()) {
+    std::cerr << "error: workload path required (or use --list-backends/--list-devices)\n";
+    return 1;
+  }
+
+  auto workload = runtime.loadWorkload(workloadPath);
+  if (!workload) {
+    std::cerr << workload.error().toString() << '\n';
+    return 1;
+  }
+
+  if (allBackends) {
+    std::cerr << "UNIMPLEMENTED: --all lands in Phase 6\n";
     return 3;
   }
 
-  // Default Phase 1 behavior: inspect.
-  (void)inspectOnly;
-  auto result = runtime.inspect(workload.value(), forced);
+  (void)validate;
+  (void)benchmark;
+
+  csrun::Expected<csrun::RunResult> result =
+      inspectOnly ? runtime.inspect(workload.value(), forced)
+                  : runtime.run(workload.value(), forced);
   if (!result) {
     std::cerr << result.error().toString() << '\n';
     return 1;
@@ -114,14 +137,11 @@ int main(int argc, char **argv) {
       return 1;
     }
     std::cout << json.value() << '\n';
-    return 0;
+  } else {
+    printTextResult(result.value());
   }
 
-  const auto &r = result.value();
-  std::cout << "CompilerSutraRun\n";
-  std::cout << "Workload: " << r.workloadName << " (" << r.operation << ")\n";
-  std::cout << "Backend:  " << csrun::toString(r.backend) << '\n';
-  std::cout << "Status:   " << r.note << '\n';
-  std::cout << "Validation: " << csrun::toString(r.validation) << '\n';
+  if (result.value().validation == csrun::ValidationStatus::Failed)
+    return 4;
   return 0;
 }

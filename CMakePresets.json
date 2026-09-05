@@ -13,7 +13,7 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CSRUN_ENABLE_VULKAN": "OFF",
+        "CSRUN_ENABLE_VULKAN": "ON",
         "CSRUN_ENABLE_CUDA": "OFF",
         "CSRUN_ENABLE_D3D12": "OFF",
         "CSRUN_ENABLE_TESTS": "ON"

@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(CSRUN_ENABLE_VULKAN "Build Vulkan backend" OFF)
+option(CSRUN_ENABLE_VULKAN "Build Vulkan backend" ON)
 option(CSRUN_ENABLE_CUDA "Build CUDA backend" OFF)
 option(CSRUN_ENABLE_D3D12 "Build D3D12 backend (Windows)" OFF)
 option(CSRUN_ENABLE_TESTS "Build unit tests" ON)
@@ -60,7 +60,8 @@ endif()
 add_library(csrun_core
   src/core/Error.cpp
   src/core/Log.cpp
-  src/core/Types.cpp)
+  src/core/Types.cpp
+  src/core/Process.cpp)
 target_include_directories(csrun_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(csrun_core PUBLIC cxx_std_20)
 
@@ -98,6 +99,28 @@ add_library(csrun_result
 target_link_libraries(csrun_result PUBLIC csrun_core nlohmann_json::nlohmann_json)
 target_include_directories(csrun_result PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+set(CSRUN_HAS_VULKAN_VALUE 0)
+if(CSRUN_ENABLE_VULKAN)
+  find_package(Vulkan QUIET)
+  if(Vulkan_FOUND)
+    add_library(csrun_backend_vulkan
+      src/backends/vulkan/VulkanBackend.cpp)
+    target_link_libraries(csrun_backend_vulkan PUBLIC
+      csrun_core
+      csrun_workload
+      csrun_validation
+      csrun_benchmark
+      csrun_result
+      Vulkan::Vulkan)
+    target_include_directories(csrun_backend_vulkan PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(csrun_backend_vulkan PUBLIC CSRUN_HAS_VULKAN=1)
+    set(CSRUN_HAS_VULKAN_VALUE 1)
+    message(STATUS "CSRUN: Vulkan backend ENABLED")
+  else()
+    message(WARNING "CSRUN_ENABLE_VULKAN=ON but Vulkan not found; building without Vulkan")
+  endif()
+endif()
+
 add_library(csrun_runtime
   src/runtime/PlatformRuntime.cpp)
 target_link_libraries(csrun_runtime PUBLIC
@@ -108,20 +131,22 @@ target_link_libraries(csrun_runtime PUBLIC
   csrun_validation
   csrun_benchmark
   csrun_result)
+if(CSRUN_HAS_VULKAN_VALUE)
+  target_link_libraries(csrun_runtime PUBLIC csrun_backend_vulkan)
+  target_compile_definitions(csrun_runtime PUBLIC CSRUN_HAS_VULKAN=1)
+  target_compile_definitions(csrun_backend PUBLIC CSRUN_HAS_VULKAN=1)
+endif()
 target_include_directories(csrun_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(csrun tools/csrun/main.cpp)
 target_link_libraries(csrun PRIVATE csrun_runtime CLI11::CLI11)
 set_target_properties(csrun PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-if(CSRUN_ENABLE_VULKAN)
-  message(STATUS "CSRUN: Vulkan backend enabled (implementation lands in Phase 2)")
-endif()
 if(CSRUN_ENABLE_CUDA)
-  message(STATUS "CSRUN: CUDA backend enabled (implementation lands in Phase 4)")
+  message(STATUS "CSRUN: CUDA backend requested (implementation lands in Phase 4)")
 endif()
 if(CSRUN_ENABLE_D3D12)
-  message(STATUS "CSRUN: D3D12 backend enabled (Windows / Phase 7)")
+  message(STATUS "CSRUN: D3D12 backend requested (Windows / Phase 7)")
 endif()
 
 if(CSRUN_ENABLE_TESTS)
@@ -140,7 +165,7 @@ if(CSRUN_ENABLE_TESTS)
 endif()
 
 message(STATUS "CompilerSutraRun ${PROJECT_VERSION}")
-message(STATUS "  CSRUN_ENABLE_VULKAN=${CSRUN_ENABLE_VULKAN}")
+message(STATUS "  CSRUN_ENABLE_VULKAN=${CSRUN_ENABLE_VULKAN} (active=${CSRUN_HAS_VULKAN_VALUE})")
 message(STATUS "  CSRUN_ENABLE_CUDA=${CSRUN_ENABLE_CUDA}")
 message(STATUS "  CSRUN_ENABLE_D3D12=${CSRUN_ENABLE_D3D12}")
 message(STATUS "  CSRUN_ENABLE_TESTS=${CSRUN_ENABLE_TESTS}")

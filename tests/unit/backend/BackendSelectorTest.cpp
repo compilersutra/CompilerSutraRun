@@ -12,15 +12,15 @@ TEST(BackendSelectorTest, ForcedUnavailableBackendReturnsError) {
   w.operation = "vector_add";
   w.execution.iterations = 1;
 
-  auto sel = selector.select(w, csrun::BackendType::Vulkan);
+  // CUDA remains an honest stub in Phase 2.
+  auto sel = selector.select(w, csrun::BackendType::CUDA);
   ASSERT_FALSE(sel);
   EXPECT_EQ(sel.error().code, csrun::ErrorCode::BackendUnavailable);
 }
 
-TEST(BackendRegistryTest, ListsHonestStubs) {
+TEST(BackendRegistryTest, RegistersExpectedBackends) {
   auto reg = csrun::BackendRegistry::createDefault();
   ASSERT_GE(reg.backends().size(), 3u);
-  for (const auto &b : reg.backends()) {
-    EXPECT_FALSE(b->info().available);
-  }
+  ASSERT_NE(reg.find(csrun::BackendType::CUDA), nullptr);
+  EXPECT_FALSE(reg.find(csrun::BackendType::CUDA)->info().available);
 }

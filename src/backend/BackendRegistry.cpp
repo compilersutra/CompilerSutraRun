@@ -2,6 +2,10 @@
 
 #include "csrun/core/Log.h"
 
+#if defined(CSRUN_HAS_VULKAN)
+#include "csrun/backends/vulkan/VulkanBackend.h"
+#endif
+
 namespace csrun {
 namespace {
 
@@ -45,14 +49,17 @@ Backend *BackendRegistry::find(BackendType type) const {
 
 BackendRegistry BackendRegistry::createDefault() {
   BackendRegistry reg;
-  // Honest stubs: Phase 1 does not fake GPU availability.
+#if defined(CSRUN_HAS_VULKAN)
+  reg.registerBackend(createVulkanBackend());
+#else
   reg.registerBackend(std::make_unique<StubBackend>(
-      BackendType::Vulkan, "Vulkan backend not built yet (enable in Phase 2)"));
+      BackendType::Vulkan, "Vulkan backend not built (configure with -DCSRUN_ENABLE_VULKAN=ON)"));
+#endif
   reg.registerBackend(std::make_unique<StubBackend>(
       BackendType::CUDA, "CUDA backend not built yet (enable in Phase 4)"));
   reg.registerBackend(std::make_unique<StubBackend>(
       BackendType::D3D12, "D3D12 backend not built yet (Windows / Phase 7)"));
-  logInfo("backend", "default registry created with honest UNAVAILABLE stubs");
+  logInfo("backend", "default registry created");
   return reg;
 }
 
