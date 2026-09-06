@@ -14,10 +14,11 @@
 |------|--------|
 | Language | C++20 (greenfield) |
 | Build | CMake + Ninja |
-| Code | Phase 1 foundation in progress |
-| GPU backends | Vulkan optional (Phase 2); CUDA/D3D12 not built yet |
+| Code | Phase 1–2 foundation + Vulkan vector_add |
+| GPU backends | Vulkan done for vector_add; CUDA/D3D12/Metal/… see [milestones.md](milestones.md) |
 | Tests | GoogleTest unit tests (CPU-only CI path) |
 | Prompt archive | `prompt/` (verbatim user briefs) |
+| Roadmap | [docs/milestones.md](milestones.md) — M0–M10 first-go multi-API platform |
 
 Phase 0 assessment: empty directory → scaffolded as CompilerSutraRun. No prior GPU platform code to preserve in this tree.
 
