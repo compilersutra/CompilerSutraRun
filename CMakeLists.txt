@@ -10,6 +10,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CSRUN_ENABLE_VULKAN "Build Vulkan backend" ON)
+option(CSRUN_ENABLE_OPENGL "Build OpenGL backend (EGL headless)" ON)
+option(CSRUN_ENABLE_OPENCL "Build OpenCL backend" ON)
+option(CSRUN_ENABLE_HIP "Build HIP/ROCm backend" ON)
 option(CSRUN_ENABLE_CUDA "Build CUDA backend" OFF)
 option(CSRUN_ENABLE_D3D12 "Build D3D12 backend (Windows)" OFF)
 option(CSRUN_ENABLE_TESTS "Build unit tests" ON)
@@ -65,10 +68,38 @@ add_library(csrun_core
 target_include_directories(csrun_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(csrun_core PUBLIC cxx_std_20)
 
+add_library(csrun_compiler
+  src/compiler/SpirvToolchain.cpp)
+target_link_libraries(csrun_compiler PUBLIC csrun_core)
+target_include_directories(csrun_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(csrun_result
+  src/result/RunResult.cpp
+  src/result/JsonWriter.cpp)
+target_link_libraries(csrun_result PUBLIC csrun_core csrun_benchmark nlohmann_json::nlohmann_json)
+target_include_directories(csrun_result PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(csrun_benchmark
+  src/benchmark/Statistics.cpp
+  src/benchmark/Timing.cpp)
+target_link_libraries(csrun_benchmark PUBLIC csrun_core)
+target_include_directories(csrun_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(csrun_validation
+  src/validation/Comparator.cpp)
+target_link_libraries(csrun_validation PUBLIC csrun_core)
+target_include_directories(csrun_validation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 add_library(csrun_workload
   src/workload/Workload.cpp
-  src/workload/WorkloadParser.cpp)
-target_link_libraries(csrun_workload PUBLIC csrun_core yaml-cpp)
+  src/workload/WorkloadParser.cpp
+  src/workload/VectorAddScaffold.cpp)
+target_link_libraries(csrun_workload PUBLIC
+  csrun_core
+  csrun_validation
+  csrun_benchmark
+  csrun_result
+  yaml-cpp)
 target_include_directories(csrun_workload PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(csrun_device
@@ -80,33 +111,22 @@ add_library(csrun_backend
   src/backend/BackendType.cpp
   src/backend/BackendRegistry.cpp
   src/backend/BackendSelector.cpp)
-target_link_libraries(csrun_backend PUBLIC csrun_core csrun_device csrun_workload)
+target_link_libraries(csrun_backend PUBLIC csrun_core csrun_device csrun_workload csrun_result)
 target_include_directories(csrun_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_library(csrun_validation
-  src/validation/Comparator.cpp)
-target_link_libraries(csrun_validation PUBLIC csrun_core)
-target_include_directories(csrun_validation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-add_library(csrun_benchmark
-  src/benchmark/Statistics.cpp)
-target_link_libraries(csrun_benchmark PUBLIC csrun_core)
-target_include_directories(csrun_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-add_library(csrun_result
-  src/result/RunResult.cpp
-  src/result/JsonWriter.cpp)
-target_link_libraries(csrun_result PUBLIC csrun_core nlohmann_json::nlohmann_json)
-target_include_directories(csrun_result PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 set(CSRUN_HAS_VULKAN_VALUE 0)
+set(CSRUN_HAS_OPENGL_VALUE 0)
+set(CSRUN_HAS_OPENCL_VALUE 0)
+set(CSRUN_HAS_HIP_VALUE 0)
+
 if(CSRUN_ENABLE_VULKAN)
   find_package(Vulkan QUIET)
   if(Vulkan_FOUND)
     add_library(csrun_backend_vulkan
-      src/backends/vulkan/VulkanBackend.cpp)
+      src/backends/vulkan/VulkanBackend.cpp
+      src/backends/vulkan/VulkanSpirvRunner.cpp)
     target_link_libraries(csrun_backend_vulkan PUBLIC
-      csrun_core
+      csrun_compiler
       csrun_workload
       csrun_validation
       csrun_benchmark
@@ -121,10 +141,99 @@ if(CSRUN_ENABLE_VULKAN)
   endif()
 endif()
 
+if(CSRUN_ENABLE_OPENGL)
+  find_package(OpenGL QUIET)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(EGL QUIET egl)
+  endif()
+  if(OpenGL_FOUND AND EGL_FOUND)
+    add_library(csrun_backend_opengl src/backends/opengl/OpenGLBackend.cpp)
+    target_include_directories(csrun_backend_opengl PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${EGL_INCLUDE_DIRS})
+    target_link_libraries(csrun_backend_opengl PUBLIC
+      csrun_workload
+      csrun_validation
+      csrun_benchmark
+      csrun_result
+      OpenGL::GL
+      ${EGL_LIBRARIES})
+    target_compile_definitions(csrun_backend_opengl PUBLIC CSRUN_HAS_OPENGL=1)
+    set(CSRUN_HAS_OPENGL_VALUE 1)
+    message(STATUS "CSRUN: OpenGL backend ENABLED")
+  else()
+    message(WARNING "CSRUN_ENABLE_OPENGL=ON but OpenGL/EGL not found; building without OpenGL")
+  endif()
+endif()
+
+if(CSRUN_ENABLE_OPENCL)
+  find_path(OpenCL_INCLUDE_DIR CL/cl.h PATHS /usr/include /usr/local/include)
+  find_library(OpenCL_LIBRARY NAMES OpenCL OpenCL.so.1 libOpenCL.so.1
+    PATHS /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/local/lib
+    NO_DEFAULT_PATH)
+  if(NOT OpenCL_LIBRARY)
+    find_library(OpenCL_LIBRARY NAMES OpenCL OpenCL.so.1 libOpenCL.so.1)
+  endif()
+  if(NOT OpenCL_LIBRARY AND EXISTS /usr/lib/x86_64-linux-gnu/libOpenCL.so.1)
+    set(OpenCL_LIBRARY /usr/lib/x86_64-linux-gnu/libOpenCL.so.1)
+  endif()
+  if(OpenCL_INCLUDE_DIR AND OpenCL_LIBRARY)
+    add_library(csrun_backend_opencl src/backends/opencl/OpenCLBackend.cpp)
+    target_include_directories(csrun_backend_opencl PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${OpenCL_INCLUDE_DIR})
+    target_link_libraries(csrun_backend_opencl PUBLIC
+      csrun_workload
+      csrun_validation
+      csrun_benchmark
+      csrun_result
+      ${OpenCL_LIBRARY})
+    target_compile_definitions(csrun_backend_opencl PUBLIC CSRUN_HAS_OPENCL=1)
+    set(CSRUN_HAS_OPENCL_VALUE 1)
+    message(STATUS "CSRUN: OpenCL backend ENABLED (${OpenCL_LIBRARY})")
+  else()
+    message(WARNING "CSRUN_ENABLE_OPENCL=ON but OpenCL not found")
+  endif()
+endif()
+
+if(CSRUN_ENABLE_HIP)
+  find_path(HIP_INCLUDE_DIR hip/hip_runtime.h
+    PATHS /opt/rocm/include /opt/rocm-7.0.2/include ENV ROCM_PATH
+    PATH_SUFFIXES include)
+  find_library(HIP_LIBRARY NAMES amdhip64
+    PATHS /opt/rocm/lib /opt/rocm-7.0.2/lib ENV ROCM_PATH PATH_SUFFIXES lib)
+  find_library(HIPRTC_LIBRARY NAMES hiprtc
+    PATHS /opt/rocm/lib /opt/rocm-7.0.2/lib ENV ROCM_PATH PATH_SUFFIXES lib)
+  if(HIP_INCLUDE_DIR AND HIP_LIBRARY AND HIPRTC_LIBRARY)
+    add_library(csrun_backend_hip src/backends/hip/HipBackend.cpp)
+    target_include_directories(csrun_backend_hip PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${HIP_INCLUDE_DIR})
+    target_link_libraries(csrun_backend_hip PUBLIC
+      csrun_workload
+      csrun_validation
+      csrun_benchmark
+      csrun_result
+      ${HIP_LIBRARY}
+      ${HIPRTC_LIBRARY})
+    target_compile_definitions(csrun_backend_hip PUBLIC CSRUN_HAS_HIP=1 __HIP_PLATFORM_AMD__)
+    set_target_properties(csrun_backend_hip PROPERTIES
+      BUILD_RPATH "/opt/rocm/lib"
+      INSTALL_RPATH "/opt/rocm/lib")
+    set(CSRUN_HAS_HIP_VALUE 1)
+    message(STATUS "CSRUN: HIP/ROCm backend ENABLED (${HIP_LIBRARY})")
+  else()
+    message(WARNING "CSRUN_ENABLE_HIP=ON but HIP/hiprtc not found")
+  endif()
+endif()
+
 add_library(csrun_runtime
-  src/runtime/PlatformRuntime.cpp)
+  src/runtime/PlatformRuntime.cpp
+  src/runtime/BuiltinBackends.cpp)
 target_link_libraries(csrun_runtime PUBLIC
   csrun_core
+  csrun_compiler
   csrun_workload
   csrun_backend
   csrun_device
@@ -133,39 +242,58 @@ target_link_libraries(csrun_runtime PUBLIC
   csrun_result)
 if(CSRUN_HAS_VULKAN_VALUE)
   target_link_libraries(csrun_runtime PUBLIC csrun_backend_vulkan)
-  target_compile_definitions(csrun_runtime PUBLIC CSRUN_HAS_VULKAN=1)
-  target_compile_definitions(csrun_backend PUBLIC CSRUN_HAS_VULKAN=1)
+  target_compile_definitions(csrun_runtime PRIVATE CSRUN_HAS_VULKAN=1)
+endif()
+if(CSRUN_HAS_OPENGL_VALUE)
+  target_link_libraries(csrun_runtime PUBLIC csrun_backend_opengl)
+  target_compile_definitions(csrun_runtime PRIVATE CSRUN_HAS_OPENGL=1)
+endif()
+if(CSRUN_HAS_OPENCL_VALUE)
+  target_link_libraries(csrun_runtime PUBLIC csrun_backend_opencl)
+  target_compile_definitions(csrun_runtime PRIVATE CSRUN_HAS_OPENCL=1)
+endif()
+if(CSRUN_HAS_HIP_VALUE)
+  target_link_libraries(csrun_runtime PUBLIC csrun_backend_hip)
+  target_compile_definitions(csrun_runtime PRIVATE CSRUN_HAS_HIP=1)
 endif()
 target_include_directories(csrun_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(csrun tools/csrun/main.cpp)
 target_link_libraries(csrun PRIVATE csrun_runtime CLI11::CLI11)
-set_target_properties(csrun PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set_target_properties(csrun PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  BUILD_RPATH "/opt/rocm/lib"
+  INSTALL_RPATH "/opt/rocm/lib")
+if(CSRUN_HAS_VULKAN_VALUE)
+  target_compile_definitions(csrun PRIVATE CSRUN_HAS_VULKAN=1)
+endif()
 
 if(CSRUN_ENABLE_CUDA)
-  message(STATUS "CSRUN: CUDA backend requested (implementation lands in Phase 4)")
+  message(STATUS "CSRUN: CUDA backend requested (needs NVIDIA GPU + CUDA toolkit)")
 endif()
 if(CSRUN_ENABLE_D3D12)
-  message(STATUS "CSRUN: D3D12 backend requested (Windows / Phase 7)")
+  message(STATUS "CSRUN: D3D12 backend requested (Windows)")
 endif()
 
 if(CSRUN_ENABLE_TESTS)
   add_executable(csrun_unit_tests
     tests/unit/core/ErrorTest.cpp
     tests/unit/workload/WorkloadParserTest.cpp
+    tests/unit/workload/VectorAddScaffoldTest.cpp
     tests/unit/backend/BackendSelectorTest.cpp
     tests/unit/benchmark/StatisticsTest.cpp
     tests/unit/validation/ComparatorTest.cpp
     tests/unit/result/JsonWriterTest.cpp)
-  target_link_libraries(csrun_unit_tests PRIVATE
-    csrun_runtime
-    GTest::gtest_main)
+  target_link_libraries(csrun_unit_tests PRIVATE csrun_runtime GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(csrun_unit_tests)
 endif()
 
 message(STATUS "CompilerSutraRun ${PROJECT_VERSION}")
 message(STATUS "  CSRUN_ENABLE_VULKAN=${CSRUN_ENABLE_VULKAN} (active=${CSRUN_HAS_VULKAN_VALUE})")
+message(STATUS "  CSRUN_ENABLE_OPENGL=${CSRUN_ENABLE_OPENGL} (active=${CSRUN_HAS_OPENGL_VALUE})")
+message(STATUS "  CSRUN_ENABLE_OPENCL=${CSRUN_ENABLE_OPENCL} (active=${CSRUN_HAS_OPENCL_VALUE})")
+message(STATUS "  CSRUN_ENABLE_HIP=${CSRUN_ENABLE_HIP} (active=${CSRUN_HAS_HIP_VALUE})")
 message(STATUS "  CSRUN_ENABLE_CUDA=${CSRUN_ENABLE_CUDA}")
 message(STATUS "  CSRUN_ENABLE_D3D12=${CSRUN_ENABLE_D3D12}")
 message(STATUS "  CSRUN_ENABLE_TESTS=${CSRUN_ENABLE_TESTS}")

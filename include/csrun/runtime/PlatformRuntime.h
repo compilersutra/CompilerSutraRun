@@ -7,6 +7,7 @@
 
 #include "csrun/backend/BackendRegistry.h"
 #include "csrun/backend/BackendSelector.h"
+#include "csrun/backend/ExecuteOptions.h"
 #include "csrun/core/Expected.h"
 #include "csrun/device/DeviceInfo.h"
 #include "csrun/result/RunResult.h"
@@ -32,9 +33,12 @@ public:
   Expected<RunResult> inspect(const Workload &workload,
                               std::optional<BackendType> forced) const;
 
-  /// Select backend, execute, validate, and benchmark when supported.
-  Expected<RunResult> run(const Workload &workload,
-                          std::optional<BackendType> forced) const;
+  Expected<RunResult> run(const Workload &workload, std::optional<BackendType> forced,
+                          const ExecuteOptions &options = {}) const;
+
+  /// Run on every available backend; skips unavailable without failing the set.
+  Expected<std::vector<RunResult>> runAll(const Workload &workload,
+                                          const ExecuteOptions &options = {}) const;
 
   std::vector<BackendInfo> listBackends() const;
   Expected<std::vector<DeviceInfo>> listDevices(std::optional<BackendType> type) const;

@@ -1,21 +1,17 @@
 #include "csrun/backends/vulkan/VulkanBackend.h"
 
-#include "csrun/benchmark/Statistics.h"
+#include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
 #include "csrun/core/Process.h"
-#include "csrun/validation/Comparator.h"
+#include "csrun/workload/VectorAddScaffold.h"
 
 #include <vulkan/vulkan.h>
 
 #include <unistd.h>
-#include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
-#include <sstream>
+#include <memory>
 #include <vector>
 
 namespace csrun {
@@ -33,104 +29,20 @@ Error vkError(ErrorCode code, const std::string &msg, VkResult r) {
   return e;
 }
 
-Expected<std::filesystem::path> findGlslang() {
-  auto probe = runProcess({"which", "glslangValidator"});
-  if (probe && probe.value().exitCode == 0) {
-    std::string path = probe.value().stdoutText;
-    while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
-      path.pop_back();
-    if (!path.empty())
-      return std::filesystem::path(path);
-  }
-  if (std::filesystem::exists("/usr/bin/glslangValidator"))
-    return std::filesystem::path("/usr/bin/glslangValidator");
-  return Error::make(ErrorCode::ToolchainNotFound,
-                     "glslangValidator not found (install glslang-tools)");
+Expected<std::vector<uint32_t>> compileGlslToSpirv(const std::filesystem::path &shaderPath) {
+  SpirvCompileRequest req;
+  req.input = shaderPath;
+  req.output = std::filesystem::temp_directory_path() /
+               ("csrun_" + shaderPath.filename().string() + "_" + std::to_string(::getpid()) +
+                ".spv");
+  req.validate = true;
+  req.keepOutput = false;
+  auto compiled = SpirvToolchain::compile(req);
+  if (!compiled)
+    return compiled.error();
+  return compiled.value().words;
 }
 
-Expected<std::filesystem::path> findSpirvVal() {
-  if (std::filesystem::exists("/usr/bin/spirv-val"))
-    return std::filesystem::path("/usr/bin/spirv-val");
-  auto probe = runProcess({"which", "spirv-val"});
-  if (probe && probe.value().exitCode == 0) {
-    std::string path = probe.value().stdoutText;
-    while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
-      path.pop_back();
-    if (!path.empty())
-      return std::filesystem::path(path);
-  }
-  return Error::make(ErrorCode::ToolchainNotFound, "spirv-val not found (install spirv-tools)");
-}
-
-Expected<std::vector<uint32_t>> compileGlslToSpirv(const std::filesystem::path &compPath) {
-  auto glslang = findGlslang();
-  if (!glslang)
-    return glslang.error();
-  auto spirvVal = findSpirvVal();
-  if (!spirvVal)
-    return spirvVal.error();
-
-  const auto outSpv = std::filesystem::temp_directory_path() /
-                      ("csrun_vector_add_" + std::to_string(::getpid()) + ".spv");
-
-  auto compile = runProcess({glslang.value().string(), "-V", "-S", "comp",
-                             compPath.string(), "-o", outSpv.string()});
-  if (!compile)
-    return compile.error();
-  if (compile.value().exitCode != 0) {
-    Error e = Error::make(ErrorCode::CompilationFailed,
-                          "glslangValidator failed: " + compile.value().stderrText);
-    e.backend = "vulkan";
-    e.operation = "compile";
-    return e;
-  }
-
-  auto validate = runProcess({spirvVal.value().string(), outSpv.string()});
-  if (!validate)
-    return validate.error();
-  if (validate.value().exitCode != 0) {
-    Error e = Error::make(ErrorCode::CompilationFailed,
-                          "spirv-val failed: " + validate.value().stderrText);
-    e.backend = "vulkan";
-    e.operation = "spirv-validate";
-    return e;
-  }
-
-  std::ifstream in(outSpv, std::ios::binary);
-  if (!in) {
-    return Error::make(ErrorCode::IoError, "failed to read SPIR-V: " + outSpv.string());
-  }
-  std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
-                          std::istreambuf_iterator<char>());
-  std::filesystem::remove(outSpv);
-  if (bytes.size() % 4 != 0 || bytes.empty())
-    return Error::make(ErrorCode::CompilationFailed, "invalid SPIR-V size");
-
-  std::vector<uint32_t> words(bytes.size() / 4);
-  std::memcpy(words.data(), bytes.data(), bytes.size());
-  return words;
-}
-
-Expected<std::filesystem::path> resolveShaderPath(const Workload &workload) {
-  // Prefer sibling .comp next to the YAML source when present.
-  if (!workload.sourcePath.empty()) {
-    std::filesystem::path yaml(workload.sourcePath);
-    auto sibling = yaml.parent_path() / "vector_add.comp";
-    if (std::filesystem::exists(sibling))
-      return sibling;
-  }
-  const char *candidates[] = {
-      "examples/vector_add/vector_add.comp",
-      "../examples/vector_add/vector_add.comp",
-      "../../examples/vector_add/vector_add.comp",
-  };
-  for (const char *c : candidates) {
-    if (std::filesystem::exists(c))
-      return std::filesystem::path(c);
-  }
-  return Error::make(ErrorCode::IoError,
-                     "vector_add.comp not found; place it next to the workload YAML");
-}
 
 uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryPropertyFlags props) {
   VkPhysicalDeviceMemoryProperties memProps{};
@@ -190,16 +102,6 @@ void destroyBuffer(VkDevice device, BufferResource &b) {
 }
 
 } // namespace
-
-struct VulkanBackend::Impl {
-  // Cached availability snapshot for info().
-  bool probed = false;
-  bool available = false;
-  std::string note = "not probed";
-};
-
-VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {}
-VulkanBackend::~VulkanBackend() = default;
 
 BackendInfo VulkanBackend::info() const {
   BackendInfo i;
@@ -286,21 +188,19 @@ Expected<std::vector<DeviceInfo>> VulkanBackend::enumerateDevices() const {
 }
 
 Expected<RunResult> VulkanBackend::execute(const Workload &workload,
-                                           const DeviceInfo &device) const {
-  if (workload.operation != "vector_add") {
-    Error e = Error::make(ErrorCode::UnsupportedOperation,
-                          "Vulkan Phase 2 supports vector_add only; got " + workload.operation);
-    e.backend = "vulkan";
-    return e;
-  }
-  if (workload.inputDtype != DataType::FP32 || workload.outputDtype != DataType::FP32) {
-    return Error::make(ErrorCode::UnsupportedDtype, "vector_add Vulkan path requires fp32");
-  }
-  const uint32_t n = static_cast<uint32_t>(workload.dimensions.count);
-  if (n == 0)
-    return Error::make(ErrorCode::InvalidWorkload, "vector_add requires dimensions.count > 0");
+                                           const DeviceInfo &device,
+                                           const ExecuteOptions &options) const {
+  auto nOr = requireVectorAddFp32(workload, "vulkan");
+  if (!nOr)
+    return nOr.error();
+  const uint32_t n = nOr.value();
 
-  auto shaderPath = resolveShaderPath(workload);
+  static constexpr std::string_view kFallbacks[] = {
+      "examples/vector_add/vector_add.comp",
+      "../examples/vector_add/vector_add.comp",
+      "../../examples/vector_add/vector_add.comp",
+  };
+  auto shaderPath = resolveKernelPath(workload, "vector_add.comp", kFallbacks);
   if (!shaderPath)
     return shaderPath.error();
   auto spirv = compileGlslToSpirv(shaderPath.value());
@@ -388,19 +288,16 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     return bufA ? (bufB ? bufC.error() : bufB.error()) : bufA.error();
   }
 
-  std::vector<float> hostA(n), hostB(n), hostRef(n), hostOut(n);
-  for (uint32_t i = 0; i < n; ++i) {
-    hostA[i] = static_cast<float>(i) * 0.5f;
-    hostB[i] = static_cast<float>(i) * 0.25f + 1.0f;
-    hostRef[i] = hostA[i] + hostB[i];
-  }
+  VectorAddHost host = makeVectorAddHost(n);
+  const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
+  const int timedIters = options.benchmark ? workload.execution.iterations : 1;
 
   void *mapped = nullptr;
   vkMapMemory(vkDevice, bufA.value().memory, 0, bytes, 0, &mapped);
-  std::memcpy(mapped, hostA.data(), static_cast<size_t>(bytes));
+  std::memcpy(mapped, host.a.data(), static_cast<size_t>(bytes));
   vkUnmapMemory(vkDevice, bufA.value().memory);
   vkMapMemory(vkDevice, bufB.value().memory, 0, bytes, 0, &mapped);
-  std::memcpy(mapped, hostB.data(), static_cast<size_t>(bytes));
+  std::memcpy(mapped, host.b.data(), static_cast<size_t>(bytes));
   vkUnmapMemory(vkDevice, bufB.value().memory);
 
   VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -559,7 +456,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   };
 
   // Warmup
-  for (int i = 0; i < workload.execution.warmup; ++i) {
+  for (int i = 0; i < warmupIters; ++i) {
     auto w = recordAndSubmit(false);
     if (!w) {
       // cleanup below via early path — fall through to cleanup helpers
@@ -581,9 +478,9 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   }
 
   std::vector<double> samples;
-  samples.reserve(static_cast<size_t>(workload.execution.iterations));
+  samples.reserve(static_cast<size_t>(timedIters));
   TimingSource timingSource = TimingSource::CpuWall;
-  for (int i = 0; i < workload.execution.iterations; ++i) {
+  for (int i = 0; i < timedIters; ++i) {
     if (timestampsSupported) {
       auto ms = recordAndSubmit(true);
       if (!ms) {
@@ -632,31 +529,11 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   }
 
   vkMapMemory(vkDevice, bufC.value().memory, 0, bytes, 0, &mapped);
-  std::memcpy(hostOut.data(), mapped, static_cast<size_t>(bytes));
+  std::memcpy(host.output.data(), mapped, static_cast<size_t>(bytes));
   vkUnmapMemory(vkDevice, bufC.value().memory);
 
-  ComparePolicy policy;
-  policy.absoluteTolerance = workload.validation.absoluteTolerance;
-  policy.relativeTolerance = workload.validation.relativeTolerance;
-  CompareResult cmp = Comparator::compareFloat32(hostRef, hostOut, policy);
-
-  RunResult result;
-  result.schemaVersion = 1;
-  result.workloadName = workload.name;
-  result.operation = workload.operation;
-  result.backend = BackendType::Vulkan;
-  result.deviceName = device.name;
-  result.deviceVendor = device.vendor;
-  result.driver = device.driver;
-  result.compilerName = "glslangValidator";
-  result.warmup = workload.execution.warmup;
-  result.iterations = workload.execution.iterations;
-  result.timing = Statistics::compute(samples, timingSource);
-  if (!workload.validation.enabled)
-    result.validation = ValidationStatus::Skipped;
-  else
-    result.validation = cmp.passed ? ValidationStatus::Passed : ValidationStatus::Failed;
-  result.note = cmp.message;
+  RunResult result = fillVectorAddResult(workload, device, BackendType::Vulkan, "glslangValidator",
+                                         options, samples, timingSource, host.reference, host.output);
 
   if (queryPool)
     vkDestroyQueryPool(vkDevice, queryPool, nullptr);
@@ -672,13 +549,8 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   vkDestroyDevice(vkDevice, nullptr);
   vkDestroyInstance(instance, nullptr);
 
-  if (workload.validation.enabled && !cmp.passed) {
-    Error e = Error::make(ErrorCode::ValidationFailed, cmp.message);
-    e.backend = "vulkan";
-    // Still return structured result via note; surface as error for CLI non-zero.
-    logError("validation", cmp.message);
-    // Prefer returning the RunResult with failed status so JSON is useful.
-  }
+  if (result.validation == ValidationStatus::Failed)
+    logError("validation", result.note);
 
   logInfo("runtime", "Vulkan vector_add completed on " + result.deviceName);
   return result;

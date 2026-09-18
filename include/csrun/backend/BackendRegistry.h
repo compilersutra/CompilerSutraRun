@@ -18,9 +18,6 @@ public:
   Backend *find(BackendType type) const;
   const std::vector<std::unique_ptr<Backend>> &backends() const { return backends_; }
 
-  /// Registers built-in stubs that correctly report UNAVAILABLE until implemented.
-  static BackendRegistry createDefault();
-
 private:
   std::vector<std::unique_ptr<Backend>> backends_;
 };

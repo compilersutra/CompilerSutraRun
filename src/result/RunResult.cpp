@@ -18,18 +18,6 @@ std::string_view toString(ValidationStatus status) {
   return "not_run";
 }
 
-std::string_view toString(TimingSource source) {
-  switch (source) {
-  case TimingSource::Unknown:
-    return "unknown";
-  case TimingSource::CpuWall:
-    return "cpu_wall";
-  case TimingSource::GpuTimestamp:
-    return "gpu_timestamp";
-  }
-  return "unknown";
-}
-
 Expected<std::string> JsonWriter::write(const RunResult &result) {
   nlohmann::json j;
   j["schema_version"] = result.schemaVersion;

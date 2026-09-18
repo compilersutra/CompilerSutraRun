@@ -8,12 +8,15 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Ninja Debug (no GPU backends)",
+      "displayName": "Ninja Debug",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CSRUN_ENABLE_VULKAN": "ON",
+        "CSRUN_ENABLE_OPENGL": "ON",
+        "CSRUN_ENABLE_OPENCL": "ON",
+        "CSRUN_ENABLE_HIP": "ON",
         "CSRUN_ENABLE_CUDA": "OFF",
         "CSRUN_ENABLE_D3D12": "OFF",
         "CSRUN_ENABLE_TESTS": "ON"
@@ -28,6 +31,21 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CSRUN_ENABLE_TESTS": "ON"
       }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (no OpenCL/HIP)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ci",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CSRUN_ENABLE_VULKAN": "ON",
+        "CSRUN_ENABLE_OPENGL": "ON",
+        "CSRUN_ENABLE_OPENCL": "OFF",
+        "CSRUN_ENABLE_HIP": "OFF",
+        "CSRUN_ENABLE_CUDA": "OFF",
+        "CSRUN_ENABLE_TESTS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -38,12 +56,23 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci"
     }
   ],
   "testPresets": [
     {
       "name": "default",
       "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
       "output": {
         "outputOnFailure": true
       }

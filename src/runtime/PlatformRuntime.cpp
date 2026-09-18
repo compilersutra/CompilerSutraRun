@@ -2,15 +2,12 @@
 
 #include "csrun/backend/BackendSelector.h"
 #include "csrun/core/Log.h"
+#include "csrun/runtime/BuiltinBackends.h"
 #include "csrun/workload/WorkloadParser.h"
-
-#if defined(CSRUN_HAS_VULKAN)
-#include "csrun/backends/vulkan/VulkanBackend.h"
-#endif
 
 namespace csrun {
 
-PlatformRuntime::PlatformRuntime() : registry_(BackendRegistry::createDefault()) {}
+PlatformRuntime::PlatformRuntime() : registry_(createDefaultBackendRegistry()) {}
 
 Expected<Workload> PlatformRuntime::loadWorkload(const std::filesystem::path &path) const {
   return WorkloadParser::parseFile(path);
@@ -33,13 +30,6 @@ Expected<RunResult> PlatformRuntime::inspect(const Workload &workload,
   result.validation = ValidationStatus::Skipped;
   result.note = "inspect only";
 
-  if (forced)
-    result.backend = *forced;
-  else if (workload.preferredBackend)
-    result.backend = *workload.preferredBackend;
-  else
-    result.backend = BackendType::Vulkan;
-
   auto selection = selectBackend(workload, forced);
   if (selection) {
     result.backend = selection.value().backend;
@@ -48,6 +38,10 @@ Expected<RunResult> PlatformRuntime::inspect(const Workload &workload,
     result.driver = selection.value().device.driver;
     result.note = selection.value().reason;
   } else {
+    if (forced)
+      result.backend = *forced;
+    else if (workload.preferredBackend)
+      result.backend = *workload.preferredBackend;
     result.note = selection.error().toString();
     logWarn("runtime", result.note);
   }
@@ -56,7 +50,8 @@ Expected<RunResult> PlatformRuntime::inspect(const Workload &workload,
 }
 
 Expected<RunResult> PlatformRuntime::run(const Workload &workload,
-                                         std::optional<BackendType> forced) const {
+                                         std::optional<BackendType> forced,
+                                         const ExecuteOptions &options) const {
   auto selection = selectBackend(workload, forced);
   if (!selection)
     return selection.error();
@@ -65,16 +60,32 @@ Expected<RunResult> PlatformRuntime::run(const Workload &workload,
   if (!backend)
     return Error::make(ErrorCode::BackendUnavailable, "selected backend missing from registry");
 
-#if defined(CSRUN_HAS_VULKAN)
-  if (auto *vk = dynamic_cast<VulkanBackend *>(backend))
-    return vk->execute(workload, selection.value().device);
-#endif
+  return backend->execute(workload, selection.value().device, options);
+}
 
-  Error e = Error::make(ErrorCode::Unimplemented,
-                        std::string(toString(selection.value().backend)) +
-                            " execute path is not implemented");
-  e.backend = std::string(toString(selection.value().backend));
-  return e;
+Expected<std::vector<RunResult>> PlatformRuntime::runAll(const Workload &workload,
+                                                         const ExecuteOptions &options) const {
+  std::vector<RunResult> results;
+  for (const auto &b : registry_.backends()) {
+    const BackendInfo info = b->info();
+    if (!info.available)
+      continue;
+    auto one = run(workload, info.type, options);
+    if (!one) {
+      RunResult skipped;
+      skipped.workloadName = workload.name;
+      skipped.operation = workload.operation;
+      skipped.backend = info.type;
+      skipped.validation = ValidationStatus::Skipped;
+      skipped.note = one.error().toString();
+      results.push_back(std::move(skipped));
+      continue;
+    }
+    results.push_back(std::move(one.value()));
+  }
+  if (results.empty())
+    return Error::make(ErrorCode::BackendUnavailable, "no available backends for --all");
+  return results;
 }
 
 std::vector<BackendInfo> PlatformRuntime::listBackends() const {

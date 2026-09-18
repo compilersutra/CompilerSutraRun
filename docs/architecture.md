@@ -14,8 +14,8 @@
 |------|--------|
 | Language | C++20 (greenfield) |
 | Build | CMake + Ninja |
-| Code | Phase 1–2 foundation + Vulkan vector_add |
-| GPU backends | Vulkan done for vector_add; CUDA/D3D12/Metal/… see [milestones.md](milestones.md) |
+| Code | Foundation + Vulkan/OpenGL/OpenCL/HIP `vector_add`; virtual `execute` |
+| GPU backends | See [milestones.md](milestones.md); CUDA/D3D12/Metal stubs |
 | Tests | GoogleTest unit tests (CPU-only CI path) |
 | Prompt archive | `prompt/` (verbatim user briefs) |
 | Roadmap | [docs/milestones.md](milestones.md) — M0–M10 first-go multi-API platform |
@@ -91,37 +91,36 @@ None in-repo prior to scaffolding. Related ecosystem knowledge:
 
 ```text
 csrun (CLI)
-  └── csrun_app / orchestration
-        ├── csrun_workload
-        ├── csrun_backend (registry + selection)
-        ├── csrun_device
+  └── csrun_runtime          (PlatformRuntime + BuiltinBackends)
+        ├── csrun_backend    (registry, selector, Backend interface)
+        ├── csrun_workload   (YAML + VectorAddScaffold)
+        ├── csrun_compiler   (SpirvToolchain — not in core)
         ├── csrun_validation
-        ├── csrun_benchmark
+        ├── csrun_benchmark  (Timing + Statistics)
         ├── csrun_result
-        └── csrun_core (Error, Expected, Log)
-              ├── yaml-cpp
-              ├── nlohmann_json
-              └── CLI11
-
-csrun_backend_vulkan (optional) → Vulkan + Shaderc + SPIRV-Tools
-csrun_backend_cuda   (optional) → CUDA
-csrun_backend_d3d12  (optional) → D3D12 + DXC (Windows)
+        ├── csrun_device
+        └── csrun_core
+              └── optional: csrun_backend_{vulkan,opengl,opencl,hip}
 ```
 
-Backends do not depend on each other. Core never includes `vulkan.h` / `cuda.h` / `d3d12.h`.
+Backends do not depend on each other. Core never includes `vulkan.h` / `cuda.h` / `hip_runtime.h` / `CL/cl.h`.
 
 ---
 
 ## 6. Backend architecture
 
 ```text
-BackendRegistry
-  ├── VulkanBackend → DeviceManager, Compiler, Runtime, Profiler
-  ├── CudaBackend
-  └── D3D12Backend
+createDefaultBackendRegistry()
+  ├── VulkanBackend::execute   (SPIR-V)
+  ├── OpenGLBackend::execute   (GLSL)
+  ├── OpenCLBackend::execute   (.cl)
+  ├── HipBackend::execute      (hiprtc)
+  └── StubBackend…            (UNAVAILABLE)
 ```
 
-Narrow interfaces at control-plane boundary. Hot execution paths stay concrete inside each backend. Unavailable backends report `UNAVAILABLE` / `UNIMPLEMENTED` — never fake success.
+`PlatformRuntime::run` selects a backend then calls **`backend->execute(...)`** — no `dynamic_cast` type switch.
+
+Shared host prep / validation / result fill lives in `VectorAddScaffold`.
 
 ---
 
@@ -149,10 +148,14 @@ MVP: load/compile existing artifacts via adapters. No custom IR. No Everything�
 ## 9. Runtime architecture
 
 ```text
-Workload → Compiler → CompiledWorkload → Runtime → ExecutionResult
+Workload + ExecuteOptions
+        → Backend::execute
+        → (API compile / submit / timing)
+        → VectorAddScaffold::fillVectorAddResult
+        → RunResult
 ```
 
-Runtime owns resources, submission, sync, transfers, lifecycle. Benchmark/validation engines stay backend-agnostic.
+`--all` runs every available backend through the same path.
 
 ---
 

@@ -5,10 +5,9 @@
 #ifndef CSRUN_BENCHMARK_STATISTICS_H
 #define CSRUN_BENCHMARK_STATISTICS_H
 
-#include "csrun/result/RunResult.h"
+#include "csrun/benchmark/Timing.h"
 
 #include <span>
-#include <vector>
 
 namespace csrun {
 

@@ -1,6 +1,11 @@
 #include "csrun/core/Log.h"
+#include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/result/RunResult.h"
 #include "csrun/runtime/PlatformRuntime.h"
+
+#if defined(CSRUN_HAS_VULKAN)
+#include "csrun/backends/vulkan/VulkanSpirvRunner.h"
+#endif
 
 #include <CLI/CLI.hpp>
 
@@ -46,12 +51,19 @@ int main(int argc, char **argv) {
   std::string backendName;
   std::string format = "text";
   std::string logLevel = "info";
+  std::string compileSpvIn;
+  std::string compileSpvOut;
+  std::string smokeComputeSpv;
+  std::string smokeVertSpv;
+  std::string smokeFragSpv;
+  std::uint32_t deviceIndex = 0;
   bool listBackends = false;
   bool listDevices = false;
   bool inspectOnly = false;
   bool validate = false;
   bool benchmark = false;
   bool allBackends = false;
+  bool vulkanSmoke = false;
 
   app.add_option("workload", workloadPath, "Path to workload YAML");
   app.add_option("--backend", backendName, "Force backend (vulkan|cuda|d3d12|...)");
@@ -61,13 +73,69 @@ int main(int argc, char **argv) {
   app.add_flag("--list-backends", listBackends, "List registered backends");
   app.add_flag("--list-devices", listDevices, "List devices from available backends");
   app.add_flag("--inspect", inspectOnly, "Parse and report workload without GPU execute");
-  app.add_flag("--validate", validate, "Enable validation (default on for run)");
-  app.add_flag("--benchmark", benchmark, "Enable benchmarking (default on for run)");
-  app.add_flag("--all", allBackends, "Run across all available backends (Phase 6)");
+  bool noValidate = false;
+  bool noBenchmark = false;
+  app.add_flag("--no-validate", noValidate, "Skip CPU-reference validation");
+  app.add_flag("--no-benchmark", noBenchmark, "Single timed run (skip warmup / multi-iter)");
+  app.add_flag("--validate", validate, "Force validation on (default)");
+  app.add_flag("--benchmark", benchmark, "Force benchmarking on (default)");
+  app.add_flag("--all", allBackends, "Run across all available backends");
+
+  app.add_option("--compile-spv", compileSpvIn,
+                 "Compile GLSL (.comp/.vert/.frag/...) to SPIR-V via glslang+spirv-val");
+  app.add_option("-o,--output", compileSpvOut, "Output .spv path for --compile-spv");
+  app.add_flag("--vulkan-smoke", vulkanSmoke,
+               "Load SPIR-V on a Vulkan device and create compute/graphics pipeline");
+  app.add_option("--spv", smokeComputeSpv, "Compute SPIR-V for --vulkan-smoke");
+  app.add_option("--vert-spv", smokeVertSpv, "Vertex SPIR-V for --vulkan-smoke");
+  app.add_option("--frag-spv", smokeFragSpv, "Fragment SPIR-V for --vulkan-smoke");
+  app.add_option("--device-index", deviceIndex, "Physical device index");
 
   CLI11_PARSE(app, argc, argv);
 
   csrun::setLogLevel(parseLogLevel(logLevel));
+
+  if (!compileSpvIn.empty()) {
+    csrun::SpirvCompileRequest req;
+    req.input = compileSpvIn;
+    req.output = compileSpvOut;
+    req.validate = true;
+    req.keepOutput = true;
+    auto result = csrun::SpirvToolchain::compile(req);
+    if (!result) {
+      std::cerr << result.error().toString() << '\n';
+      return 1;
+    }
+    std::cout << "SPIR-V written: " << result.value().spvPath << '\n';
+    std::cout << "stage: " << csrun::toString(result.value().stage)
+              << "  words: " << result.value().words.size() << '\n';
+    return 0;
+  }
+
+  if (vulkanSmoke) {
+#if defined(CSRUN_HAS_VULKAN)
+    csrun::VulkanSmokeRequest req;
+    req.computeSpv = smokeComputeSpv;
+    req.vertexSpv = smokeVertSpv;
+    req.fragmentSpv = smokeFragSpv;
+    req.deviceIndex = deviceIndex;
+    auto smoke = csrun::vulkanSmokeSpirv(req);
+    if (!smoke) {
+      std::cerr << smoke.error().toString() << '\n';
+      return 1;
+    }
+    std::cout << "Vulkan SPIR-V smoke: PASS\n";
+    std::cout << "device: " << smoke.value().deviceName << '\n';
+    std::cout << "mode:   " << smoke.value().mode << '\n';
+    for (const auto &s : smoke.value().steps)
+      std::cout << "  - " << s << '\n';
+    return 0;
+#else
+    std::cerr << "UNAVAILABLE: Vulkan backend not built\n";
+    return 2;
+#endif
+  }
+
   csrun::PlatformRuntime runtime;
 
   if (listBackends) {
@@ -104,7 +172,8 @@ int main(int argc, char **argv) {
   }
 
   if (workloadPath.empty()) {
-    std::cerr << "error: workload path required (or use --list-backends/--list-devices)\n";
+    std::cerr << "error: workload path required (or --compile-spv / --vulkan-smoke / "
+                 "--list-backends)\n";
     return 1;
   }
 
@@ -115,16 +184,48 @@ int main(int argc, char **argv) {
   }
 
   if (allBackends) {
-    std::cerr << "UNIMPLEMENTED: --all lands in Phase 6\n";
-    return 3;
+    csrun::ExecuteOptions opts;
+    opts.validate = !noValidate;
+    opts.benchmark = !noBenchmark;
+    if (validate)
+      opts.validate = true;
+    if (benchmark)
+      opts.benchmark = true;
+    auto results = runtime.runAll(workload.value(), opts);
+    if (!results) {
+      std::cerr << results.error().toString() << '\n';
+      return 1;
+    }
+    int failed = 0;
+    for (const auto &r : results.value()) {
+      if (format == "json") {
+        auto json = csrun::JsonWriter::write(r);
+        if (!json) {
+          std::cerr << json.error().toString() << '\n';
+          return 1;
+        }
+        std::cout << json.value() << '\n';
+      } else {
+        printTextResult(r);
+        std::cout << "----\n";
+      }
+      if (r.validation == csrun::ValidationStatus::Failed)
+        ++failed;
+    }
+    return failed ? 4 : 0;
   }
 
-  (void)validate;
-  (void)benchmark;
+  csrun::ExecuteOptions opts;
+  opts.validate = !noValidate;
+  opts.benchmark = !noBenchmark;
+  if (validate)
+    opts.validate = true;
+  if (benchmark)
+    opts.benchmark = true;
 
   csrun::Expected<csrun::RunResult> result =
       inspectOnly ? runtime.inspect(workload.value(), forced)
-                  : runtime.run(workload.value(), forced);
+                  : runtime.run(workload.value(), forced, opts);
   if (!result) {
     std::cerr << result.error().toString() << '\n';
     return 1;

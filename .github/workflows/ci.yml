@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build + unit tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build cmake g++ pkg-config \
+            libvulkan-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCSRUN_ENABLE_VULKAN=ON \
+            -DCSRUN_ENABLE_OPENGL=ON \
+            -DCSRUN_ENABLE_OPENCL=OFF \
+            -DCSRUN_ENABLE_HIP=OFF \
+            -DCSRUN_ENABLE_CUDA=OFF \
+            -DCSRUN_ENABLE_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: CLI smoke (no GPU required for --list-backends)
+        run: ./build/bin/csrun --list-backends

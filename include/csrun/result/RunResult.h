@@ -6,6 +6,7 @@
 #define CSRUN_RESULT_RUNRESULT_H
 
 #include "csrun/backend/BackendType.h"
+#include "csrun/benchmark/Timing.h"
 #include "csrun/core/Expected.h"
 
 #include <string>
@@ -13,16 +14,6 @@
 namespace csrun {
 
 enum class ValidationStatus { NotRun, Passed, Failed, Skipped };
-enum class TimingSource { Unknown, CpuWall, GpuTimestamp };
-
-struct TimingStats {
-  TimingSource source = TimingSource::Unknown;
-  double minMs = 0;
-  double medianMs = 0;
-  double meanMs = 0;
-  double maxMs = 0;
-  double stddevMs = 0;
-};
 
 struct RunResult {
   int schemaVersion = 1;
@@ -46,7 +37,6 @@ public:
 };
 
 std::string_view toString(ValidationStatus status);
-std::string_view toString(TimingSource source);
 
 } // namespace csrun
 

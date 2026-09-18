@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a backend, workload, or platform capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What gap does this fill?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: API / milestone / acceptance criteria.
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Suggested milestone
+      options:
+        - M1 Vulkan depth
+        - M2 CUDA
+        - M4 D3D12
+        - M5 Metal
+        - M6 HIP/OpenCL
+        - M7 WebGPU/CPU
+        - M8 csperf integration
+        - M11 OpenGL ES / Android
+        - M10 polish
+        - Unsure

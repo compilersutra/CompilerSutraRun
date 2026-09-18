@@ -1,58 +1,98 @@
 # CompilerSutraRun
 
 **CLI:** `csrun`  
-**Brand:** [CompilerSutra](https://compilersutra.com)
+**Product:** [CompilerSutra](https://compilersutra.com)
 
-Universal GPU workload portability, execution, validation, and benchmarking orchestration layer.
+Cross-API GPU workload runner: describe once in YAML, execute on real backends, validate against a CPU reference, and emit comparable timing JSON.
 
-Describe a workload once (YAML). Discover devices/APIs. Select a backend. Orchestrate existing toolchains (Shaderc, DXC, CUDA, …). Execute. Validate against a CPU reference. Benchmark with native GPU timing. Emit comparable JSON.
+This is an **orchestration layer**. It does not invent a new IR, driver, or shader compiler. It reuses Vulkan, OpenGL, OpenCL, HIP/ROCm, and (planned) CUDA / D3D12 / Metal / WebGPU toolchains — and reports `UNAVAILABLE` when a path is missing. Never fakes results.
 
-This project does **not** replace Vulkan, CUDA, HIP, D3D12, LLVM, MLIR, SPIR-V Tools, or vendor drivers. It reuses them through adapters.
+## Features
 
-## Status
+| Capability | Status |
+|------------|--------|
+| Workload YAML + JSON results | Done |
+| Vulkan (SPIR-V / glslang) `vector_add` | Done |
+| OpenGL 4.3 compute (EGL headless) | Done |
+| OpenCL ICD `vector_add` | Done |
+| HIP / ROCm (hiprtc) `vector_add` | Done |
+| `csrun --all` across available backends | Done |
+| Virtual `Backend::execute` + shared host scaffold | Done |
+| CUDA / D3D12 / Metal / WebGPU / CPU / GLES | Planned (honest stubs) |
 
-See **[docs/milestones.md](docs/milestones.md)** for the full roadmap (Vulkan → CUDA → `--all` → D3D12/DXIL → Metal → HIP/OpenCL → WebGPU/CPU → `csperf` integration → MLIR).
+Roadmap: [`docs/milestones.md`](docs/milestones.md) · Architecture: [`docs/architecture.md`](docs/architecture.md)
 
-| Milestone | Status |
-|-----------|--------|
-| M0 Foundation + Vulkan `vector_add` | Done |
-| M1 Vulkan matmul / reduction | Active |
-| M2 CUDA | Planned |
-| M3 `--all` cross-backend | Planned |
-| M4 D3D12 + DXIL | Planned |
-| M5 Metal | Planned |
-| M6 HIP + OpenCL | Planned |
-| M7 WebGPU + CPU | Planned |
-| M8 `csperf` integration | Planned |
-| M9 MLIR/LLVM layer | Future |
-| M10 Platform polish | Future |
+## Requirements
 
-## Quick start
+- CMake ≥ 3.20, Ninja, C++20 compiler
+- Optional: Vulkan loader + glslangValidator, OpenGL/EGL, OpenCL ICD, ROCm/HIP
+
+## Build
 
 ```bash
 cmake --preset default
 cmake --build --preset default
 ctest --preset default
+```
+
+Release:
+
+```bash
+cmake --preset release && cmake --build --preset release
+```
+
+## Usage
+
+```bash
 ./build/bin/csrun --list-backends
 ./build/bin/csrun --list-devices
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend vulkan
+./build/bin/csrun examples/vector_add/vector_add.yaml --backend opencl
+./build/bin/csrun examples/vector_add/vector_add.yaml --backend hip
+./build/bin/csrun examples/vector_add/vector_add.yaml --all
 ./build/bin/csrun examples/vector_add/vector_add.yaml --format json
+./build/bin/csrun --compile-spv examples/vector_add/vector_add.comp -o /tmp/vadd.spv
 ```
+
+Useful flags: `--no-validate`, `--no-benchmark`, `--backend <name>`, `--log-level error`.
+
+### CUDA note
+
+This product builds CUDA only when the toolkit and an NVIDIA device are present (`-DCSRUN_ENABLE_CUDA=ON`). On AMD-only hosts the backend stays `UNAVAILABLE`. Test on an NVIDIA workstation or cloud GPU when implementing that path.
 
 ## Layout
 
-- `include/csrun/` / `src/` — platform libraries
-- `tools/csrun/` — CLI
-- `docs/` — architecture, milestones, design
-- `prompt/` — verbatim product prompts
-- `tests/` — unit and workload fixtures
-- `examples/` — sample workloads
+```text
+include/csrun/     public headers
+src/               libraries + backends
+tools/csrun/       CLI
+examples/          sample workloads / kernels
+tests/             unit + fixtures
+docs/              architecture, milestones, design
+prompt/            product briefs (archived)
+.github/           CI, templates, CODEOWNERS
+```
+
+## Design rules
+
+- One backend per API; common code never includes vendor headers
+- `Backend::execute` is the control plane; registration is a single path
+- Shared host prep lives in `VectorAddScaffold` — backends own compile/submit/timing only
+- Integrate mature OSS; do not reimplement glslang / DXC / nvcc
 
 ## Related
 
-- Sibling: `CompilerSutraPerfTool` (`csperf`) — CPU/GPU experiment framework (separate product)
-- LLVM tree is **not** modified by this project
+- **CompilerSutraPerfTool** (`csperf`) — experiment / diff / report front door (separate product; integrates later via M8)
+- LLVM/MLIR trees are **not** modified by this repository
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/development.md`](docs/development.md).
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Apache-2.0 — see `LICENSE`.
+Apache-2.0 — see [`LICENSE`](LICENSE).
