@@ -1,0 +1,6 @@
+[submodule "external/shader-corpus/glslang"]
+	path = external/shader-corpus/glslang
+	url = https://github.com/KhronosGroup/glslang.git
+[submodule "external/shader-corpus/Vulkan"]
+	path = external/shader-corpus/Vulkan
+	url = https://github.com/SaschaWillems/Vulkan.git

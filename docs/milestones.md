@@ -183,6 +183,23 @@ GLSL (.glsl compute)
 
 ---
 
+## M12 — Vulkan workload coverage *(planned)*
+
+Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond the in-tree examples.
+
+| Deliverable | Notes |
+|-------------|--------|
+| Broader shader / workload intake | Public and in-house GLSL → SPIR-V paths |
+| Compile vs execute coverage | Clear report of what builds vs what runs on GPU |
+| Layout / feature growth | Extra descriptor / resource patterns as needed |
+| Regression gate | In-tree Vulkan examples keep PASS |
+
+**Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
+
+Tracking: [milestone/13](https://github.com/compilersutra/CompilerSutraRun/milestone/13) · [issue #2](https://github.com/compilersutra/CompilerSutraRun/issues/2)
+
+---
+
 ## M7 — WebGPU + CPU backend
 
 Broaden “first-go” beyond discrete GPU APIs.
@@ -243,7 +260,8 @@ Prompt **Phase 8**. Only after native backends are real.
 
 ```text
 Done     Vulkan (SPIR-V) + .comp/.vert/.frag → .spv smoke
-Active   Vulkan SPIR-V depth
+Active   Vulkan SPIR-V depth (counters / timing)
+Planned  M12 Vulkan workload coverage
 Next     CUDA (PTX) → --all
 Then     D3D12 (DXIL) → Metal → HIP → OpenCL
 Then     OpenGL + OpenGL ES (pre-Vulkan Linux / mobile)
