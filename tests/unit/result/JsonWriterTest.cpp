@@ -10,6 +10,6 @@ TEST(JsonWriterTest, EmitsSchemaVersion) {
   r.validation = csrun::ValidationStatus::Skipped;
   auto json = csrun::JsonWriter::write(r);
   ASSERT_TRUE(json);
-  EXPECT_NE(json.value().find("\"schema_version\": 1"), std::string::npos);
+  EXPECT_NE(json.value().find("\"schema_version\": 2"), std::string::npos);
   EXPECT_NE(json.value().find("vector_add"), std::string::npos);
 }

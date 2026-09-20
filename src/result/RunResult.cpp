@@ -48,6 +48,107 @@ Expected<std::string> JsonWriter::write(const RunResult &result) {
       {"max_ms", result.timing.maxMs},
       {"stddev_ms", result.timing.stddevMs},
   };
+  const auto &c = result.counters;
+  const bool hasCounters = c.available || c.occlusionAvailable || c.gpuTimestampAvailable ||
+                           c.hostRecordMs > 0.0 || c.hostSubmitMs > 0.0 ||
+                           c.hostQueueWaitMs > 0.0 || !c.vendor.empty() || !c.vendorNote.empty();
+  if (hasCounters) {
+    nlohmann::json pipe = {
+        {"ia_vertices", c.iaVertices},
+        {"ia_primitives", c.iaPrimitives},
+        {"vs_invocations", c.vsInvocations},
+        {"tcs_patches", c.tcsPatches},
+        {"tes_invocations", c.tesInvocations},
+        {"gs_invocations", c.gsInvocations},
+        {"gs_primitives", c.gsPrimitives},
+        {"fs_invocations", c.fsInvocations},
+        {"ps_invocations", c.fsInvocations},
+        {"cs_invocations", c.csInvocations},
+        {"clip_invocations", c.clipInvocations},
+        {"clip_primitives", c.clipPrimitives},
+        {"available", c.available},
+    };
+    nlohmann::json derived = {
+        {"fs_per_vs", c.fsPerVs()},
+        {"fs_per_primitive", c.fsPerPrimitive()},
+        {"clip_reject_ratio", c.clipRejectRatio()},
+        {"overdraw_estimate", c.overdrawEstimate()},
+    };
+    nlohmann::json host = {
+        {"record_ms", c.hostRecordMs},
+        {"submit_ms", c.hostSubmitMs},
+        {"queue_wait_ms", c.hostQueueWaitMs},
+        {"h2d_ms", c.hostH2dMs},
+        {"d2h_ms", c.hostD2hMs},
+    };
+    nlohmann::json gpuTiming = {
+        {"elapsed_ms", c.gpuElapsedMs},
+        {"available", c.gpuTimestampAvailable},
+    };
+    nlohmann::json gpuStages = {
+        {"available", c.gpuStages.available},
+        {"kind", c.gpuStages.kind},
+        {"total_ms", c.gpuStages.totalMs},
+        {"top_to_vs_ms", c.gpuStages.topToVsMs},
+        {"vs_to_fs_ms", c.gpuStages.vsToFsMs},
+        {"fs_to_color_ms", c.gpuStages.fsToColorMs},
+        {"color_to_bottom_ms", c.gpuStages.colorToBottomMs},
+        {"top_to_cs_ms", c.gpuStages.topToCsMs},
+        {"cs_to_bottom_ms", c.gpuStages.csToBottomMs},
+    };
+    nlohmann::json workload = {
+        {"draw_count", c.drawCount},
+        {"dispatch_count", c.dispatchCount},
+    };
+    nlohmann::json occlusion = {
+        {"available", c.occlusionAvailable},
+        {"samples_passed", c.occlusionSamplesPassed},
+    };
+    nlohmann::json vendor = {
+        {"api", c.vendorApi},
+        {"note", c.vendorNote},
+        {"available", !c.vendor.empty()},
+        {"counters", nlohmann::json::array()},
+    };
+    for (const auto &vc : c.vendor) {
+      vendor["counters"].push_back({
+          {"name", vc.name},
+          {"category", vc.category},
+          {"description", vc.description},
+          {"unit", vc.unit},
+          {"value", vc.value},
+      });
+    }
+    j["counters"] = {
+        {"pipeline_statistics", std::move(pipe)},
+        {"derived", std::move(derived)},
+        {"host", std::move(host)},
+        {"gpu_timing", std::move(gpuTiming)},
+        {"gpu_stages", std::move(gpuStages)},
+        {"workload", std::move(workload)},
+        {"occlusion", std::move(occlusion)},
+        {"vendor", std::move(vendor)},
+        // Flat aliases for older consumers / csperf bridge
+        {"ia_vertices", c.iaVertices},
+        {"ia_primitives", c.iaPrimitives},
+        {"vs_invocations", c.vsInvocations},
+        {"fs_invocations", c.fsInvocations},
+        {"ps_invocations", c.fsInvocations},
+        {"cs_invocations", c.csInvocations},
+        {"clip_invocations", c.clipInvocations},
+        {"clip_primitives", c.clipPrimitives},
+        {"occlusion_samples_passed", c.occlusionSamplesPassed},
+        {"gpu_elapsed_ms", c.gpuElapsedMs},
+        {"host_record_ms", c.hostRecordMs},
+        {"host_submit_ms", c.hostSubmitMs},
+        {"host_queue_wait_ms", c.hostQueueWaitMs},
+        {"host_h2d_ms", c.hostH2dMs},
+        {"host_d2h_ms", c.hostD2hMs},
+        {"fs_per_vs", c.fsPerVs()},
+        {"fs_per_primitive", c.fsPerPrimitive()},
+        {"overdraw_estimate", c.overdrawEstimate()},
+    };
+  }
   j["validation"] = {
       {"status", std::string(toString(result.validation))},
   };

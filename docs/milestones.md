@@ -75,9 +75,11 @@ Not “one workload type at a time”. General path:
 | `csrun --compile-spv` | Write real `.spv` files |
 | `csrun --vulkan-smoke` | Load SPV → `vkCreateShaderModule` → compute/graphics pipeline |
 | Workload execute | Still uses same toolchain (e.g. `vector_add.comp`) |
+| GPU timestamps | `VK_QUERY_TYPE_TIMESTAMP` on draw/dispatch (offscreen, WSI, compute) |
+| **Vulkan counters** | Portable: pipeline stats + occlusion + timestamps + host record/submit/queue-wait + draws/dispatches. Vendor AMD HW via `VK_KHR_performance_query` (RADV) when present. Full checklist in text + nested JSON (`schema_version` 2). |
 | Later on this milestone | matmul/reduction as **more shaders**, not a separate product |
 
-**Exit:** `.comp`/`.vert`/`.frag` → `.spv` → Vulkan smoke PASS on real GPU.
+**Exit:** `.comp`/`.vert`/`.frag` → `.spv` → Vulkan execute PASS on real GPU, with **timestamps + pipeline-stat counters** in `--format json`.
 
 ---
 

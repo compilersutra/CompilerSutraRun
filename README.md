@@ -5,6 +5,8 @@
 
 Cross-API GPU workload runner: describe once in YAML, execute on real backends, validate against a CPU reference, and emit comparable timing JSON.
 
+**Primary authoring path:** handwritten `.vert` / `.frag` / `.comp` (and other stages) → SPIR-V (glslang) → load/read on Vulkan. Kernel ops like `vector_add` sit beside that.
+
 This is an **orchestration layer**. It does not invent a new IR, driver, or shader compiler. It reuses Vulkan, OpenGL, OpenCL, HIP/ROCm, and (planned) CUDA / D3D12 / Metal / WebGPU toolchains — and reports `UNAVAILABLE` when a path is missing. Never fakes results.
 
 ## Features
@@ -50,6 +52,10 @@ cmake --preset release && cmake --build --preset release
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend opencl
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend hip
 ./build/bin/csrun examples/vector_add/vector_add.yaml --all
+./build/bin/csrun examples/shaders/triangle.yaml --backend vulkan
+./build/bin/csrun examples/shaders/triangle.yaml --backend vulkan --no-show
+./build/bin/csrun --compile-spv examples/shaders/triangle.vert -o /tmp/t.vert.spv
+./build/bin/csrun --inspect-spv /tmp/t.vert.spv
 ./build/bin/csrun examples/vector_add/vector_add.yaml --format json
 ./build/bin/csrun --compile-spv examples/vector_add/vector_add.comp -o /tmp/vadd.spv
 ```

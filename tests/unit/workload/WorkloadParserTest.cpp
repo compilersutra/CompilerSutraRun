@@ -34,3 +34,33 @@ TEST(WorkloadParserTest, RejectsMissingName) {
   ASSERT_FALSE(w);
   EXPECT_EQ(w.error().code, csrun::ErrorCode::InvalidWorkload);
 }
+
+TEST(WorkloadParserTest, ParsesHandwrittenSpirvShaders) {
+  constexpr const char *kYaml = R"(
+name: triangle
+operation: spirv
+backend: vulkan
+shaders:
+  - triangle.vert
+  - path: triangle.frag
+    stage: frag
+)";
+  auto w = csrun::WorkloadParser::parseString(kYaml);
+  ASSERT_TRUE(w) << w.error().toString();
+  ASSERT_EQ(w.value().shaders.size(), 2u);
+  EXPECT_EQ(w.value().shaders[0].path, "triangle.vert");
+  EXPECT_EQ(w.value().shaders[1].stage, "frag");
+}
+
+TEST(WorkloadParserTest, ParsesShaderMapForm) {
+  constexpr const char *kYaml = R"(
+name: t
+operation: shader
+shaders:
+  vertex: a.vert
+  fragment: b.frag
+)";
+  auto w = csrun::WorkloadParser::parseString(kYaml);
+  ASSERT_TRUE(w) << w.error().toString();
+  ASSERT_EQ(w.value().shaders.size(), 2u);
+}

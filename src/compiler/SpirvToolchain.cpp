@@ -115,9 +115,45 @@ ShaderStage shaderStageFromPath(const std::filesystem::path &path) {
     return ShaderStage::Mesh;
   if (e == ".task")
     return ShaderStage::Task;
+  // Allow foo.vert.glsl style
   const auto stem = path.stem();
   if (stem.has_extension())
     return shaderStageFromPath(stem);
+  return ShaderStage::Unknown;
+}
+
+ShaderStage parseShaderStage(std::string_view text) {
+  std::string t(text);
+  for (char &c : t)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (t == "comp" || t == "compute")
+    return ShaderStage::Compute;
+  if (t == "vert" || t == "vertex")
+    return ShaderStage::Vertex;
+  if (t == "frag" || t == "fragment")
+    return ShaderStage::Fragment;
+  if (t == "tesc" || t == "tesscontrol" || t == "tess_control")
+    return ShaderStage::TessControl;
+  if (t == "tese" || t == "tesseval" || t == "tess_evaluation")
+    return ShaderStage::TessEvaluation;
+  if (t == "geom" || t == "geometry")
+    return ShaderStage::Geometry;
+  if (t == "rgen" || t == "raygen")
+    return ShaderStage::RayGen;
+  if (t == "rahit" || t == "anyhit")
+    return ShaderStage::AnyHit;
+  if (t == "rchit" || t == "closesthit")
+    return ShaderStage::ClosestHit;
+  if (t == "rmiss" || t == "miss")
+    return ShaderStage::Miss;
+  if (t == "rint" || t == "intersection")
+    return ShaderStage::Intersection;
+  if (t == "rcall" || t == "callable")
+    return ShaderStage::Callable;
+  if (t == "mesh")
+    return ShaderStage::Mesh;
+  if (t == "task")
+    return ShaderStage::Task;
   return ShaderStage::Unknown;
 }
 
@@ -193,7 +229,9 @@ Expected<SpirvCompileResult> SpirvToolchain::compile(const SpirvCompileRequest &
   if (!std::filesystem::exists(req.input))
     return Error::make(ErrorCode::IoError, "shader not found: " + req.input.string());
 
-  const ShaderStage stage = shaderStageFromPath(req.input);
+  const ShaderStage stage = req.stageOverride != ShaderStage::Unknown
+                                ? req.stageOverride
+                                : shaderStageFromPath(req.input);
   const auto token = glslangStageToken(stage);
   if (token.empty()) {
     return Error::make(ErrorCode::UnsupportedOperation,
@@ -245,6 +283,53 @@ Expected<SpirvCompileResult> SpirvToolchain::compile(const SpirvCompileRequest &
   logInfo("compiler", std::string("SPIR-V OK stage=") + std::string(toString(stage)) +
                           " words=" + std::to_string(out.words.size()) +
                           " out=" + out.spvPath.string());
+  return out;
+}
+
+Expected<SpirvModuleInfo> SpirvToolchain::inspectSpvFile(const std::filesystem::path &spvPath) {
+  auto words = loadSpvFile(spvPath);
+  if (!words)
+    return words.error();
+  if (words.value().size() < 5)
+    return Error::make(ErrorCode::CompilationFailed, "SPIR-V too short to inspect");
+
+  SpirvModuleInfo info;
+  info.path = spvPath;
+  info.version = words.value()[1];
+  info.generator = words.value()[2];
+  info.bound = words.value()[3];
+  info.wordCount = words.value().size();
+  const unsigned major = (info.version >> 16) & 0xffu;
+  const unsigned minor = (info.version >> 8) & 0xffu;
+  info.summary = "spirv " + std::to_string(major) + "." + std::to_string(minor) +
+                 " words=" + std::to_string(info.wordCount) +
+                 " bound=" + std::to_string(info.bound) + " file=" + spvPath.string();
+  return info;
+}
+
+Expected<std::string> SpirvToolchain::disassembleSpvFile(const std::filesystem::path &spvPath,
+                                                         int maxLines) {
+  auto probe = runProcess({"which", "spirv-dis"});
+  if (!probe || probe.value().exitCode != 0)
+    return std::string{};
+  std::string tool = probe.value().stdoutText;
+  while (!tool.empty() && (tool.back() == '\n' || tool.back() == '\r'))
+    tool.pop_back();
+  auto run = runProcess({tool, spvPath.string()});
+  if (!run || run.value().exitCode != 0)
+    return std::string{};
+  std::string text = run.value().stdoutText;
+  if (maxLines <= 0)
+    return text;
+  std::string out;
+  int lines = 0;
+  for (size_t i = 0; i < text.size() && lines < maxLines; ++i) {
+    out.push_back(text[i]);
+    if (text[i] == '\n')
+      ++lines;
+  }
+  if (lines >= maxLines)
+    out += "...\n";
   return out;
 }
 

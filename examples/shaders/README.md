@@ -1,16 +1,42 @@
-# SPIR-V / Vulkan shader examples
+# Handwritten shaders → SPIR-V → Vulkan
 
-Compile any stage to `.spv`, then smoke-test the Vulkan API:
+Industry path:
 
-```bash
-# .comp / .vert / .frag → .spv (glslang + spirv-val)
-./build/bin/csrun --compile-spv examples/vector_add/vector_add.comp -o build/spv/vector_add.comp.spv
-./build/bin/csrun --compile-spv examples/shaders/triangle.vert -o build/spv/triangle.vert.spv
-./build/bin/csrun --compile-spv examples/shaders/triangle.frag -o build/spv/triangle.frag.spv
-
-# Load SPIR-V on a real device: create modules + pipelines
-./build/bin/csrun --vulkan-smoke --spv build/spv/vector_add.comp.spv
-./build/bin/csrun --vulkan-smoke --vert-spv build/spv/triangle.vert.spv --frag-spv build/spv/triangle.frag.spv
+```text
+.vert / .frag / .comp
+        │
+        ▼
+  glslangValidator (+ spirv-val)
+        │
+        ▼
+      .spv
+        │
+   ┌────┴────┐
+   │ show    │ --no-show / CI
+   ▼         ▼
+ Xlib WSI   offscreen
+ surface    color target
+ swapchain  vkCmdDraw
+ present    + readback
 ```
 
-Supported extensions for stage detection: `.comp` `.vert` `.frag` `.tesc` `.tese` `.geom` (+ ray/mesh when toolchain supports them).
+## Quick use
+
+```bash
+# YAML workload — WSI present (window) or headless bench
+./build/bin/csrun examples/shaders/triangle.yaml --backend vulkan
+./build/bin/csrun examples/shaders/triangle_bench.yaml --backend vulkan --format json
+
+./build/bin/csrun --compile-spv examples/shaders/triangle.vert -o build/spv/triangle.vert.spv
+./build/bin/csrun --inspect-spv build/spv/triangle.vert.spv
+```
+
+YAML:
+
+```yaml
+execution:
+  show: true      # WSI present (default)
+  show_ms: 3000   # present duration; Esc / close also exits
+```
+
+Stage detection from extension: `.comp` `.vert` `.frag` `.tesc` `.tese` `.geom`.

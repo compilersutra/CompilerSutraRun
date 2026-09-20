@@ -6,6 +6,7 @@
 #define CSRUN_RESULT_RUNRESULT_H
 
 #include "csrun/backend/BackendType.h"
+#include "csrun/benchmark/PipelineStats.h"
 #include "csrun/benchmark/Timing.h"
 #include "csrun/core/Expected.h"
 
@@ -16,7 +17,7 @@ namespace csrun {
 enum class ValidationStatus { NotRun, Passed, Failed, Skipped };
 
 struct RunResult {
-  int schemaVersion = 1;
+  int schemaVersion = 2;
   std::string workloadName;
   std::string operation;
   BackendType backend{};
@@ -27,6 +28,7 @@ struct RunResult {
   int warmup = 0;
   int iterations = 0;
   TimingStats timing;
+  PipelineStats counters;
   ValidationStatus validation = ValidationStatus::NotRun;
   std::string note;
 };

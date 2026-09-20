@@ -1,0 +1,14 @@
+name: plasma_handwritten_bench
+operation: spirv
+backend: vulkan
+shaders:
+  - plasma.vert
+  - plasma.frag
+execution:
+  warmup: 5
+  iterations: 50
+  show: false
+  width: 64
+  height: 64
+validation:
+  enabled: false

@@ -1,0 +1,33 @@
+#version 450
+
+// C[M,N] = A[M,K] * B[K,N]  (row-major)
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) readonly buffer MatrixA {
+  float a[];
+};
+
+layout(set = 0, binding = 1) readonly buffer MatrixB {
+  float b[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer MatrixC {
+  float c[];
+};
+
+layout(push_constant) uniform Push {
+  uint M;
+  uint N;
+  uint K;
+} push;
+
+void main() {
+  uint row = gl_GlobalInvocationID.y;
+  uint col = gl_GlobalInvocationID.x;
+  if (row >= push.M || col >= push.N)
+    return;
+  float acc = 0.0;
+  for (uint k = 0u; k < push.K; ++k)
+    acc += a[row * push.K + k] * b[k * push.N + col];
+  c[row * push.N + col] = acc;
+}

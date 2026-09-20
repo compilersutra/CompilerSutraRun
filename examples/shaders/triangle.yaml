@@ -1,0 +1,13 @@
+name: triangle_handwritten
+operation: spirv
+backend: vulkan
+shaders:
+  - triangle.vert
+  - triangle.frag
+execution:
+  warmup: 2
+  iterations: 10
+  show: true
+  show_ms: 3000
+validation:
+  enabled: false

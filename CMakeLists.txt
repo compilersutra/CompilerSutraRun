@@ -81,7 +81,8 @@ target_include_directories(csrun_result PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 
 add_library(csrun_benchmark
   src/benchmark/Statistics.cpp
-  src/benchmark/Timing.cpp)
+  src/benchmark/Timing.cpp
+  src/benchmark/PipelineStats.cpp)
 target_link_libraries(csrun_benchmark PUBLIC csrun_core)
 target_include_directories(csrun_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -124,7 +125,9 @@ if(CSRUN_ENABLE_VULKAN)
   if(Vulkan_FOUND)
     add_library(csrun_backend_vulkan
       src/backends/vulkan/VulkanBackend.cpp
-      src/backends/vulkan/VulkanSpirvRunner.cpp)
+      src/backends/vulkan/VulkanSpirvRunner.cpp
+      src/backends/vulkan/VulkanWsiPresenter.cpp
+      src/backends/vulkan/VulkanPerfQuery.cpp)
     target_link_libraries(csrun_backend_vulkan PUBLIC
       csrun_compiler
       csrun_workload
@@ -132,6 +135,10 @@ if(CSRUN_ENABLE_VULKAN)
       csrun_benchmark
       csrun_result
       Vulkan::Vulkan)
+    find_package(X11 REQUIRED)
+    target_include_directories(csrun_backend_vulkan PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(csrun_backend_vulkan PUBLIC ${X11_LIBRARIES})
+    message(STATUS "CSRUN: Vulkan WSI present ENABLED (VK_KHR_xlib_surface + swapchain)")
     target_include_directories(csrun_backend_vulkan PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_definitions(csrun_backend_vulkan PUBLIC CSRUN_HAS_VULKAN=1)
     set(CSRUN_HAS_VULKAN_VALUE 1)

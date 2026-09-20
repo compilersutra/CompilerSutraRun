@@ -37,6 +37,13 @@ void printTextResult(const csrun::RunResult &r) {
   std::cout << "Compiler:    " << r.compilerName << '\n';
   std::cout << "Timing:      median=" << r.timing.medianMs << " ms"
             << " source=" << csrun::toString(r.timing.source) << '\n';
+  if (r.counters.available || r.counters.occlusionAvailable || r.counters.gpuTimestampAvailable ||
+      r.counters.hostRecordMs > 0.0 || r.counters.hostSubmitMs > 0.0 ||
+      r.counters.hostQueueWaitMs > 0.0 || !r.counters.vendor.empty() ||
+      !r.counters.vendorNote.empty()) {
+    std::cout << "Counters:    " << r.counters.summaryLine() << '\n';
+    std::cout << r.counters.checklistReport();
+  }
   std::cout << "Validation:  " << csrun::toString(r.validation) << '\n';
   if (!r.note.empty())
     std::cout << "Note:        " << r.note << '\n';
@@ -56,7 +63,9 @@ int main(int argc, char **argv) {
   std::string smokeComputeSpv;
   std::string smokeVertSpv;
   std::string smokeFragSpv;
+  std::string inspectSpvPath;
   std::uint32_t deviceIndex = 0;
+
   bool listBackends = false;
   bool listDevices = false;
   bool inspectOnly = false;
@@ -64,6 +73,11 @@ int main(int argc, char **argv) {
   bool benchmark = false;
   bool allBackends = false;
   bool vulkanSmoke = false;
+  bool noValidate = false;
+  bool noBenchmark = false;
+  bool showWindow = false;
+  bool noShow = false;
+  std::string vendorCountersMode = "single-pass";
 
   app.add_option("workload", workloadPath, "Path to workload YAML");
   app.add_option("--backend", backendName, "Force backend (vulkan|cuda|d3d12|...)");
@@ -73,27 +87,46 @@ int main(int argc, char **argv) {
   app.add_flag("--list-backends", listBackends, "List registered backends");
   app.add_flag("--list-devices", listDevices, "List devices from available backends");
   app.add_flag("--inspect", inspectOnly, "Parse and report workload without GPU execute");
-  bool noValidate = false;
-  bool noBenchmark = false;
   app.add_flag("--no-validate", noValidate, "Skip CPU-reference validation");
   app.add_flag("--no-benchmark", noBenchmark, "Single timed run (skip warmup / multi-iter)");
   app.add_flag("--validate", validate, "Force validation on (default)");
   app.add_flag("--benchmark", benchmark, "Force benchmarking on (default)");
   app.add_flag("--all", allBackends, "Run across all available backends");
+  app.add_flag("--show", showWindow, "Present graphics via Vulkan WSI (swapchain)");
+  app.add_flag("--no-show", noShow, "Headless offscreen draw (no window)");
+  app.add_option("--vendor-counters", vendorCountersMode,
+                 "RADV HW counters: single-pass (default, safe on GFX12) | all (2-pass, may hang) | off")
+      ->check(CLI::IsMember({"all", "single-pass", "off"}));
 
   app.add_option("--compile-spv", compileSpvIn,
-                 "Compile GLSL (.comp/.vert/.frag/...) to SPIR-V via glslang+spirv-val");
+                 "Compile handwritten GLSL (.comp/.vert/.frag/...) to SPIR-V");
   app.add_option("-o,--output", compileSpvOut, "Output .spv path for --compile-spv");
+  app.add_option("--inspect-spv", inspectSpvPath, "Read SPIR-V header (+ spirv-dis head if available)");
   app.add_flag("--vulkan-smoke", vulkanSmoke,
-               "Load SPIR-V on a Vulkan device and create compute/graphics pipeline");
+               "Load SPIR-V on Vulkan and execute draw/dispatch (offscreen)");
   app.add_option("--spv", smokeComputeSpv, "Compute SPIR-V for --vulkan-smoke");
   app.add_option("--vert-spv", smokeVertSpv, "Vertex SPIR-V for --vulkan-smoke");
   app.add_option("--frag-spv", smokeFragSpv, "Fragment SPIR-V for --vulkan-smoke");
-  app.add_option("--device-index", deviceIndex, "Physical device index");
+  auto *deviceIndexOpt = app.add_option(
+      "--device-index", deviceIndex,
+      "Physical device index (see --list-devices); omit to auto-pick best (prefers perf_query)");
 
   CLI11_PARSE(app, argc, argv);
 
   csrun::setLogLevel(parseLogLevel(logLevel));
+
+  if (!inspectSpvPath.empty()) {
+    auto info = csrun::SpirvToolchain::inspectSpvFile(inspectSpvPath);
+    if (!info) {
+      std::cerr << info.error().toString() << '\n';
+      return 1;
+    }
+    std::cout << info.value().summary << '\n';
+    auto dis = csrun::SpirvToolchain::disassembleSpvFile(inspectSpvPath, 40);
+    if (dis && !dis.value().empty())
+      std::cout << dis.value();
+    return 0;
+  }
 
   if (!compileSpvIn.empty()) {
     csrun::SpirvCompileRequest req;
@@ -118,7 +151,8 @@ int main(int argc, char **argv) {
     req.computeSpv = smokeComputeSpv;
     req.vertexSpv = smokeVertSpv;
     req.fragmentSpv = smokeFragSpv;
-    req.deviceIndex = deviceIndex;
+    if (deviceIndexOpt->count() > 0)
+      req.deviceIndex = deviceIndex;
     auto smoke = csrun::vulkanSmokeSpirv(req);
     if (!smoke) {
       std::cerr << smoke.error().toString() << '\n';
@@ -166,7 +200,10 @@ int main(int argc, char **argv) {
     }
     std::cout << "Backend\tIndex\tDevice\n";
     for (const auto &d : devices.value()) {
-      std::cout << csrun::toString(d.backend) << '\t' << d.index << '\t' << d.name << '\n';
+      std::cout << csrun::toString(d.backend) << '\t' << d.index << '\t' << d.name;
+      if (!d.driver.empty())
+        std::cout << "\t(" << d.driver << ")";
+      std::cout << '\n';
     }
     return 0;
   }
@@ -191,6 +228,18 @@ int main(int argc, char **argv) {
       opts.validate = true;
     if (benchmark)
       opts.benchmark = true;
+    if (showWindow || noShow) {
+      opts.showWindowSet = true;
+      opts.showWindow = showWindow && !noShow;
+    }
+    if (deviceIndexOpt->count() > 0)
+      opts.deviceIndex = deviceIndex;
+    if (vendorCountersMode == "off")
+      opts.vendorCounters = csrun::VendorCountersMode::Off;
+    else if (vendorCountersMode == "single-pass")
+      opts.vendorCounters = csrun::VendorCountersMode::PreferSinglePass;
+    else
+      opts.vendorCounters = csrun::VendorCountersMode::All;
     auto results = runtime.runAll(workload.value(), opts);
     if (!results) {
       std::cerr << results.error().toString() << '\n';
@@ -222,6 +271,18 @@ int main(int argc, char **argv) {
     opts.validate = true;
   if (benchmark)
     opts.benchmark = true;
+  if (showWindow || noShow) {
+    opts.showWindowSet = true;
+    opts.showWindow = showWindow && !noShow;
+  }
+  if (deviceIndexOpt->count() > 0)
+    opts.deviceIndex = deviceIndex;
+  if (vendorCountersMode == "off")
+    opts.vendorCounters = csrun::VendorCountersMode::Off;
+  else if (vendorCountersMode == "single-pass")
+    opts.vendorCounters = csrun::VendorCountersMode::PreferSinglePass;
+  else
+    opts.vendorCounters = csrun::VendorCountersMode::All;
 
   csrun::Expected<csrun::RunResult> result =
       inspectOnly ? runtime.inspect(workload.value(), forced)

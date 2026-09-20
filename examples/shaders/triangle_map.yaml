@@ -1,0 +1,10 @@
+name: triangle_map_form
+operation: shader
+backend: vulkan
+shaders:
+  vertex: triangle.vert
+  fragment: triangle.frag
+execution:
+  iterations: 1
+validation:
+  enabled: false

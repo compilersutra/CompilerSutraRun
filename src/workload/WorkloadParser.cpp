@@ -61,6 +61,18 @@ Expected<Workload> fromNode(const YAML::Node &root, std::string_view sourceName)
       w.execution.warmup = ex["warmup"].as<int>();
     if (ex["iterations"])
       w.execution.iterations = ex["iterations"].as<int>();
+    if (ex["show"])
+      w.execution.show = ex["show"].as<bool>();
+    if (ex["show_ms"])
+      w.execution.showMs = ex["show_ms"].as<int>();
+    if (ex["width"])
+      w.execution.width = ex["width"].as<std::uint32_t>();
+    if (ex["height"])
+      w.execution.height = ex["height"].as<std::uint32_t>();
+    if (ex["extent"] && ex["extent"].IsSequence() && ex["extent"].size() >= 2) {
+      w.execution.width = ex["extent"][0].as<std::uint32_t>();
+      w.execution.height = ex["extent"][1].as<std::uint32_t>();
+    }
   }
 
   if (root["validation"]) {
@@ -83,6 +95,52 @@ Expected<Workload> fromNode(const YAML::Node &root, std::string_view sourceName)
       return Error::make(ErrorCode::InvalidWorkload, "unknown preferred backend");
     }
     w.preferredBackend = *parsed;
+  }
+
+  auto addShader = [&](const YAML::Node &n) -> Expected<void> {
+    ShaderRef ref;
+    if (n.IsScalar()) {
+      ref.path = n.as<std::string>();
+    } else if (n.IsMap()) {
+      if (!n["path"])
+        return Error::make(ErrorCode::InvalidWorkload, "shaders[] entry requires path");
+      ref.path = n["path"].as<std::string>();
+      if (n["stage"])
+        ref.stage = n["stage"].as<std::string>();
+    } else {
+      return Error::make(ErrorCode::InvalidWorkload, "invalid shaders[] entry");
+    }
+    w.shaders.push_back(std::move(ref));
+    return {};
+  };
+
+  if (root["shaders"]) {
+    const auto &s = root["shaders"];
+    if (s.IsSequence()) {
+      for (const auto &item : s) {
+        auto ok = addShader(item);
+        if (!ok)
+          return ok.error();
+      }
+    } else if (s.IsMap()) {
+      // shaders: { vertex: a.vert, fragment: b.frag, compute: c.comp }
+      for (auto it = s.begin(); it != s.end(); ++it) {
+        ShaderRef ref;
+        ref.stage = it->first.as<std::string>();
+        ref.path = it->second.as<std::string>();
+        w.shaders.push_back(std::move(ref));
+      }
+    } else {
+      return Error::make(ErrorCode::InvalidWorkload, "shaders must be a list or map");
+    }
+  }
+
+  if (root["spv_output_dir"])
+    w.spvOutputDir = root["spv_output_dir"].as<std::string>();
+
+  if (isSpirvWorkload(w) && w.shaders.empty()) {
+    return Error::make(ErrorCode::InvalidWorkload,
+                       "spirv/shader workload requires shaders: [.vert/.frag/.comp, ...]");
   }
 
   if (w.execution.iterations < 1) {

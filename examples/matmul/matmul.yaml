@@ -1,0 +1,19 @@
+name: matmul_handwritten
+operation: spirv
+backend: vulkan
+shaders:
+  - matmul.comp
+dimensions:
+  M: 256
+  N: 256
+  K: 256
+dtype:
+  input: fp32
+  output: fp32
+execution:
+  warmup: 5
+  iterations: 20
+  show: false
+validation:
+  enabled: true
+  tolerance: 1.0e-3

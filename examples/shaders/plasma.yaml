@@ -1,0 +1,13 @@
+name: plasma_handwritten
+operation: spirv
+backend: vulkan
+shaders:
+  - plasma.vert
+  - plasma.frag
+execution:
+  warmup: 2
+  iterations: 20
+  show: true
+  show_ms: 4000
+validation:
+  enabled: false
