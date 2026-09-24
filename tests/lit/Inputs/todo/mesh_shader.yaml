@@ -1,0 +1,16 @@
+# Needs mesh (+ task) stages in the graphics pipeline.
+name: todo_mesh_shader
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/meshshader/meshshader.task
+  - external/shader-corpus/Vulkan/shaders/glsl/meshshader/meshshader.mesh
+  - external/shader-corpus/Vulkan/shaders/glsl/meshshader/meshshader.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

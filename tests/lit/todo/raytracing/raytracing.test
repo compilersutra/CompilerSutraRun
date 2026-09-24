@@ -1,0 +1,7 @@
+# TODO feature: raytracing
+# When implemented: move this test (+ Inputs/todo/raytracing.yaml) to
+#   tests/lit/execute/corpus/raytracing/
+# and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/raytracing.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

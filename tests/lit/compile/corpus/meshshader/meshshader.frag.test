@@ -1,0 +1,3 @@
+# Corpus compile: meshshader/meshshader.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/meshshader/meshshader.frag -o %t.spv

@@ -1,0 +1,2 @@
+# REQUIRES: vulkan, gpu, examples
+# RUN: %csrun %repo/examples/shaders/triangle_bench.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

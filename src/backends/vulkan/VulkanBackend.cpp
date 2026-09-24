@@ -141,6 +141,15 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
       smoke.vertexSpv = compiled.value().spvPath;
     else if (compiled.value().stage == ShaderStage::Fragment)
       smoke.fragmentSpv = compiled.value().spvPath;
+    else {
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            std::string("Vulkan execute does not support shader stage '") +
+                                std::string(toString(compiled.value().stage)) + "' yet (" +
+                                src.filename().string() + ")");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
   }
 
   auto loaded = vulkanSmokeSpirv(smoke);

@@ -1,0 +1,5 @@
+# TODO feature: input_attachments
+# When implemented: move to tests/lit/execute/corpus/input_attachments/ and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/input_attachments.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

@@ -1,0 +1,15 @@
+# Needs subpass / input attachment support (subpassInput).
+name: todo_input_attachments
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/inputattachments/attachmentread.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/inputattachments/attachmentread.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

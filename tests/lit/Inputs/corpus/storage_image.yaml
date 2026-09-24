@@ -1,0 +1,14 @@
+# Promoted compute smoke: storage_image
+name: corpus_storage_image
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/computeshader/edgedetect.comp
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

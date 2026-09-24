@@ -191,7 +191,7 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 |-------------|--------|
 | Broader shader / workload intake | Public and in-house GLSL → SPIR-V paths |
 | Compile vs execute coverage | Clear report of what builds vs what runs on GPU |
-| Layout / feature growth | Extra descriptor / resource patterns as needed |
+| Layout / feature growth | Multi-set descriptors done; more patterns via `tests/lit/todo/` |
 | Regression gate | In-tree Vulkan examples keep PASS |
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.

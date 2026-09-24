@@ -1,0 +1,15 @@
+# Needs inline uniform block descriptor type (not plain UBO).
+name: todo_inline_uniform
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/inlineuniformblocks/pbr.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/inlineuniformblocks/pbr.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

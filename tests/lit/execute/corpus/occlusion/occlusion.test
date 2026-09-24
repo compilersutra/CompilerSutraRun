@@ -1,0 +1,2 @@
+# REQUIRES: vulkan, gpu, corpus, glslang
+# RUN: %csrun %repo/tests/lit/Inputs/corpus/occlusion.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

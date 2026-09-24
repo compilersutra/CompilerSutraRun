@@ -35,14 +35,21 @@ git submodule update --init --depth 1
 # optional: CSRUN_CORPUS_LIMIT=100 ./external/shader-corpus/scripts/scan.sh
 ```
 
-Looks at `glslang/Test` and `Vulkan/data/shaders`.
+Looks at `Vulkan/shaders/glsl` by default (real sample shaders).
+
+Optional — include glslang’s Test tree (many files are **expected** compile failures):
+
+```bash
+CSRUN_CORPUS_DIRS="$PWD/external/shader-corpus/Vulkan/shaders/glsl:$PWD/external/shader-corpus/glslang/Test" \
+  ./external/shader-corpus/scripts/scan.sh
+```
 
 ## Sources
 
 | Upstream | Submodule path | Shader tree |
 |----------|----------------|-------------|
-| [KhronosGroup/glslang](https://github.com/KhronosGroup/glslang) | `glslang/` | `Test/` |
-| [SaschaWillems/Vulkan](https://github.com/SaschaWillems/Vulkan) | `Vulkan/` | `data/shaders/` |
+| [SaschaWillems/Vulkan](https://github.com/SaschaWillems/Vulkan) | `Vulkan/` | `shaders/glsl/` (default scan) |
+| [KhronosGroup/glslang](https://github.com/KhronosGroup/glslang) | `glslang/` | `Test/` (optional; lots of negative tests) |
 
 Full sample **applications** stay upstream. This is for **shaders**, not host demos.
 

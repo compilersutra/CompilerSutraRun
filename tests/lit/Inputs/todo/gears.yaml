@@ -1,0 +1,15 @@
+# Needs real model/camera push or UBO data (gears draws black).
+name: todo_gears
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/gears/gears.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/gears/gears.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

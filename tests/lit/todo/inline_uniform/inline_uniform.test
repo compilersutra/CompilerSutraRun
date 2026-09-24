@@ -1,0 +1,5 @@
+# TODO feature: inline_uniform
+# When implemented: move to tests/lit/execute/corpus/inline_uniform/ and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/inline_uniform.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

@@ -1,0 +1,3 @@
+# Corpus compile: radialblur/colorpass.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/radialblur/colorpass.frag -o %t.spv

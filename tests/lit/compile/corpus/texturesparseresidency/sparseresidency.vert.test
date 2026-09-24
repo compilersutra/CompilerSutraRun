@@ -1,0 +1,3 @@
+# Corpus compile: texturesparseresidency/sparseresidency.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/texturesparseresidency/sparseresidency.vert -o %t.spv

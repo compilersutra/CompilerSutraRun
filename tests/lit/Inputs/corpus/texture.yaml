@@ -1,0 +1,14 @@
+name: texture
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/texture/texture.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/texture/texture.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

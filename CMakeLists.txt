@@ -68,8 +68,9 @@ add_library(csrun_core
 target_include_directories(csrun_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(csrun_core PUBLIC cxx_std_20)
 
-add_library(csrun_compiler
-  src/compiler/SpirvToolchain.cpp)
+  add_library(csrun_compiler
+  src/compiler/SpirvToolchain.cpp
+  src/compiler/SpirvReflect.cpp)
 target_link_libraries(csrun_compiler PUBLIC csrun_core)
 target_include_directories(csrun_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -126,6 +127,8 @@ if(CSRUN_ENABLE_VULKAN)
     add_library(csrun_backend_vulkan
       src/backends/vulkan/VulkanBackend.cpp
       src/backends/vulkan/VulkanSpirvRunner.cpp
+      src/backends/vulkan/VulkanGraphicsResources.cpp
+      src/backends/vulkan/VulkanComputeResources.cpp
       src/backends/vulkan/VulkanWsiPresenter.cpp
       src/backends/vulkan/VulkanPerfQuery.cpp)
     target_link_libraries(csrun_backend_vulkan PUBLIC
@@ -294,6 +297,19 @@ if(CSRUN_ENABLE_TESTS)
   target_link_libraries(csrun_unit_tests PRIVATE csrun_runtime GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(csrun_unit_tests)
+
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_custom_target(check-csrun
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/csrun-lit"
+              "${CMAKE_SOURCE_DIR}/tests/lit"
+              --csrun "$<TARGET_FILE:csrun>"
+              --repo "${CMAKE_SOURCE_DIR}"
+      DEPENDS csrun
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "Running csrun-lit regression suite"
+      USES_TERMINAL)
+  endif()
 endif()
 
 message(STATUS "CompilerSutraRun ${PROJECT_VERSION}")

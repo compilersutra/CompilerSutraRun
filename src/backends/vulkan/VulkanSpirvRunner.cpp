@@ -1,9 +1,12 @@
 #include "csrun/backends/vulkan/VulkanSpirvRunner.h"
 
 #include "csrun/backends/vulkan/VulkanDevicePick.h"
+#include "csrun/backends/vulkan/VulkanComputeResources.h"
+#include "csrun/backends/vulkan/VulkanGraphicsResources.h"
 #include "csrun/backends/vulkan/VulkanPerfQuery.h"
 #include "csrun/backends/vulkan/VulkanPipelineQueries.h"
 #include "csrun/backends/vulkan/VulkanWsiPresenter.h"
+#include "csrun/compiler/SpirvReflect.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
 
@@ -152,9 +155,28 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   if (perfSetup.want)
     deviceExts.push_back(VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME);
 
+  // Probe descriptor-indexing features (Vulkan 1.2 / EXT) for runtime arrays.
+  VkPhysicalDeviceDescriptorIndexingFeatures indexingQuery{};
+  indexingQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceFeatures2 query2{};
+  query2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  query2.pNext = &indexingQuery;
+  vkGetPhysicalDeviceFeatures2(physical, &query2);
+  const bool wantIndexing = indexingQuery.runtimeDescriptorArray == VK_TRUE &&
+                            indexingQuery.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+
   VkPhysicalDeviceFeatures enabledFeatures{};
   if (pipeStatsSupported)
     enabledFeatures.pipelineStatisticsQuery = VK_TRUE;
+  if (supportedFeatures.shaderClipDistance)
+    enabledFeatures.shaderClipDistance = VK_TRUE;
+
+  VkPhysicalDeviceDescriptorIndexingFeatures enabledIndexing{};
+  enabledIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  if (wantIndexing) {
+    enabledIndexing.runtimeDescriptorArray = VK_TRUE;
+    enabledIndexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  }
 
   VkPhysicalDevicePerformanceQueryFeaturesKHR enabledPerfFeatures = perfSetup.features;
   VkPhysicalDeviceFeatures2 features2{};
@@ -167,9 +189,18 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   dci.ppEnabledExtensionNames = deviceExts.empty() ? nullptr : deviceExts.data();
+  // Chain: features2 → [indexing] → [perf]
+  void *chain = nullptr;
   if (perfSetup.want) {
-    enabledPerfFeatures.pNext = nullptr;
-    features2.pNext = &enabledPerfFeatures;
+    enabledPerfFeatures.pNext = chain;
+    chain = &enabledPerfFeatures;
+  }
+  if (wantIndexing) {
+    enabledIndexing.pNext = chain;
+    chain = &enabledIndexing;
+  }
+  if (chain || perfSetup.want || wantIndexing) {
+    features2.pNext = chain;
     dci.pNext = &features2;
     dci.pEnabledFeatures = nullptr;
   } else {
@@ -187,6 +218,8 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       devNote += " (pipelineStatisticsQuery)";
     if (perfSetup.want)
       devNote += " (+ VK_KHR_performance_query)";
+    if (wantIndexing)
+      devNote += " (+ descriptor_indexing)";
     steps.push_back(devNote);
   }
 
@@ -206,6 +239,28 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       return words.error();
     }
     steps.push_back("loaded compute SPIR-V: " + req.computeSpv.string());
+
+    // Reflect first: UBO / storage-image / multi-set → generic path; else legacy 3-SSBO.
+    {
+      auto cRefl = reflectSpirvModule(words.value(), false);
+      if (!cRefl) {
+        cleanup();
+        return cRefl.error();
+      }
+      if (vulkanComputeNeedsGenericResources(cRefl.value())) {
+        auto ran = vulkanRunComputeGeneric(physical, device, queue, queueFamily, words.value(), req,
+                                           out);
+        if (!ran) {
+          cleanup();
+          return ran.error();
+        }
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physical, &props);
+        out.deviceName = props.deviceName;
+        cleanup();
+        return out;
+      }
+    }
 
     auto mod = createModule(device, words.value(), steps);
     if (!mod) {
@@ -798,29 +853,39 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     steps.push_back("loaded vertex SPIR-V: " + req.vertexSpv.string());
     steps.push_back("loaded fragment SPIR-V: " + req.fragmentSpv.string());
 
+    auto vRefl = reflectSpirvModule(vWords.value(), true);
+    if (!vRefl) {
+      cleanup();
+      return vRefl.error();
+    }
+    auto fRefl = reflectSpirvModule(fWords.value(), false);
+    if (!fRefl) {
+      cleanup();
+      return fRefl.error();
+    }
+    const SpirvModuleReflection gfxRefl = mergeSpirvReflections(vRefl.value(), fRefl.value());
+    auto gfxRes = vulkanCreateGraphicsResources(physical, device, queue, queueFamily, gfxRefl, steps);
+    if (!gfxRes) {
+      cleanup();
+      return gfxRes.error();
+    }
+    VulkanGraphicsResources resources = std::move(gfxRes.value());
+
     auto vMod = createModule(device, vWords.value(), steps);
     if (!vMod) {
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return vMod.error();
     }
     auto fMod = createModule(device, fWords.value(), steps);
     if (!fMod) {
       vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return fMod.error();
     }
 
-    VkPipelineLayoutCreateInfo plci{};
-    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    r = vkCreatePipelineLayout(device, &plci, nullptr, &layout);
-    if (r != VK_SUCCESS) {
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
-      cleanup();
-      return vkError("vkCreatePipelineLayout failed", r);
-    }
-    steps.push_back("vkCreatePipelineLayout");
+    VkPipelineLayout layout = resources.pipelineLayout;
 
     VkAttachmentDescription colorAtt{};
     colorAtt.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -859,9 +924,9 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     r = vkCreateRenderPass(device, &rpci, nullptr, &renderPass);
     if (r != VK_SUCCESS) {
-      vkDestroyPipelineLayout(device, layout, nullptr);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return vkError("vkCreateRenderPass failed", r);
     }
@@ -879,6 +944,12 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    if (resources.hasVertexAttrs) {
+      vi.vertexBindingDescriptionCount = static_cast<uint32_t>(resources.vertexBindings.size());
+      vi.pVertexBindingDescriptions = resources.vertexBindings.data();
+      vi.vertexAttributeDescriptionCount = static_cast<uint32_t>(resources.vertexAttrs.size());
+      vi.pVertexAttributeDescriptions = resources.vertexAttrs.data();
+    }
 
     VkPipelineInputAssemblyStateCreateInfo ia{};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -938,7 +1009,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
     if (r != VK_SUCCESS) {
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -963,7 +1034,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (r != VK_SUCCESS) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -978,7 +1049,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -994,7 +1065,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1018,7 +1089,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1041,7 +1112,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1065,7 +1136,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1084,7 +1155,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1104,7 +1175,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1127,7 +1198,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1253,9 +1324,10 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
         vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vulkanCmdBindGraphicsResources(cmd, resources);
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, queryPool, 1);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdDraw(cmd, resources.hasVertexAttrs ? resources.vertexCount : 3, 1, 0, 0);
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, queryPool, 2);
         vkCmdEndRenderPass(cmd);
@@ -1388,7 +1460,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyImage(device, colorImage, nullptr);
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
       vkDestroyShaderModule(device, vMod.value(), nullptr);
       cleanup();
@@ -1471,7 +1543,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     vkDestroyImage(device, colorImage, nullptr);
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
-    vkDestroyPipelineLayout(device, layout, nullptr);
+    vulkanDestroyGraphicsResources(device, resources);
     vkDestroyShaderModule(device, fMod.value(), nullptr);
     vkDestroyShaderModule(device, vMod.value(), nullptr);
     steps.push_back("cleanup graphics objects");

@@ -1,0 +1,325 @@
+#!/usr/bin/env python3
+"""csrun-lit — llvm-lit style test runner for CompilerSutraRun.
+
+Discovers *.test files, runs RUN: lines with substitutions, prints PASS/FAIL/XFAIL/UNSUPPORTED.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+DIR_RE = re.compile(r"^\s*(?:#|//|;)?\s*(RUN|REQUIRES|UNSUPPORTED|XFAIL):\s*(.*)$")
+RESULT_ORDER = ("UNSUPPORTED", "PASS", "XFAIL", "XPASS", "FAIL", "TIMEOUT")
+RESULT_LABELS = {
+    "PASS": ("Passed", False),
+    "XFAIL": ("Expectedly Failed", False),
+    "UNSUPPORTED": ("Unsupported", False),
+    "FAIL": ("Failed", True),
+    "XPASS": ("Unexpectedly Passed", True),
+    "TIMEOUT": ("Timed Out", True),
+}
+
+
+@dataclass
+class TestCase:
+    path: Path
+    relative: str
+    run: list[str] = field(default_factory=list)
+    requires: list[str] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)
+    xfail: bool = False
+
+
+@dataclass
+class TestResult:
+    name: str
+    status: str
+    detail: str = ""
+    elapsed: float = 0.0
+
+
+def parse_test(path: Path, suite_root: Path) -> TestCase:
+    tc = TestCase(path=path, relative=str(path.relative_to(suite_root)).replace("\\", "/"))
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = DIR_RE.match(line)
+        if not m:
+            continue
+        kind, rest = m.group(1), m.group(2).strip()
+        if kind == "RUN":
+            tc.run.append(rest)
+        elif kind == "REQUIRES":
+            tc.requires.extend(x.strip() for x in rest.split(",") if x.strip())
+        elif kind == "UNSUPPORTED":
+            tc.unsupported.extend(x.strip() for x in rest.split(",") if x.strip())
+        elif kind == "XFAIL":
+            # XFAIL: *  or XFAIL: vulkan  → treat whole test as expected-fail when feature present
+            tc.xfail = True if rest in ("*", "") else True
+    return tc
+
+
+def discover_tests(suite_root: Path, filter_re: re.Pattern[str] | None) -> list[TestCase]:
+    tests: list[TestCase] = []
+    for path in sorted(suite_root.rglob("*.test")):
+        if any(p.name.startswith(".") for p in path.parents):
+            continue
+        rel = str(path.relative_to(suite_root)).replace("\\", "/")
+        if filter_re and not filter_re.search(rel):
+            continue
+        tc = parse_test(path, suite_root)
+        if not tc.run:
+            continue
+        tests.append(tc)
+    return tests
+
+
+def feature_set(csrun: Path, repo: Path) -> set[str]:
+    feats: set[str] = {"host"}
+    if shutil.which("glslangValidator") or shutil.which("glslang"):
+        feats.add("glslang")
+    if not csrun.is_file():
+        return feats
+    try:
+        out = subprocess.run(
+            [str(csrun), "--list-backends"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        text = (out.stdout or "") + (out.stderr or "")
+        for name in ("vulkan", "opengl", "opencl", "hip", "cuda", "metal", "cpu"):
+            if re.search(rf"\b{name}\b", text, re.I):
+                feats.add(name)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # Device probe: cheap list-devices if vulkan present
+    if "vulkan" in feats:
+        try:
+            r = subprocess.run(
+                [str(csrun), "--list-devices", "--backend", "vulkan"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if r.returncode == 0:
+                feats.add("gpu")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # Repo markers
+    if (repo / "examples" / "vector_add" / "vector_add.yaml").is_file():
+        feats.add("examples")
+    if (repo / "external" / "shader-corpus" / "Vulkan" / "shaders" / "glsl").is_dir():
+        feats.add("corpus")
+    return feats
+
+
+def missing_requires(needed: Iterable[str], have: set[str]) -> list[str]:
+    return [f for f in needed if f not in have]
+
+
+def hit_unsupported(markers: Iterable[str], have: set[str]) -> list[str]:
+    return [f for f in markers if f in have]
+
+
+def substitute(cmd: str, *, csrun: Path, repo: Path, test: Path, tmp: Path) -> str:
+    mapping = {
+        "%csrun": shlex.quote(str(csrun)),
+        "%repo": shlex.quote(str(repo)),
+        "%s": shlex.quote(str(test)),
+        "%S": shlex.quote(str(test.parent)),
+        "%t": shlex.quote(str(tmp / "out")),
+        "%T": shlex.quote(str(tmp)),
+    }
+    # Longer keys first
+    out = cmd
+    for key in sorted(mapping, key=len, reverse=True):
+        out = out.replace(key, mapping[key])
+    return out
+
+
+def run_test(tc: TestCase, *, csrun: Path, repo: Path, features: set[str], timeout: float, verbose: bool) -> TestResult:
+    name = f"csrun :: {tc.relative}"
+    miss = missing_requires(tc.requires, features)
+    if miss:
+        return TestResult(name, "UNSUPPORTED", f"missing {','.join(miss)}")
+    bad = hit_unsupported(tc.unsupported, features)
+    if bad:
+        return TestResult(name, "UNSUPPORTED", f"unsupported {','.join(bad)}")
+
+    t0 = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="csrun-lit-") as td:
+        tmp = Path(td)
+        for i, raw in enumerate(tc.run):
+            cmdline = substitute(raw, csrun=csrun, repo=repo, test=tc.path, tmp=tmp)
+            if verbose:
+                print(f"RUN: {cmdline}", flush=True)
+            try:
+                proc = subprocess.run(
+                    cmdline,
+                    shell=True,
+                    cwd=str(repo),
+                    capture_output=not verbose,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                elapsed = time.perf_counter() - t0
+                if tc.xfail:
+                    return TestResult(name, "XFAIL", f"timeout on RUN #{i+1}", elapsed)
+                return TestResult(name, "TIMEOUT", f"timeout on RUN #{i+1}", elapsed)
+            if proc.returncode != 0:
+                elapsed = time.perf_counter() - t0
+                detail = f"exit {proc.returncode} on RUN #{i+1}"
+                if not verbose and proc.stderr:
+                    detail += f": {proc.stderr.strip().splitlines()[-1][:160]}"
+                if tc.xfail:
+                    return TestResult(name, "XFAIL", detail, elapsed)
+                return TestResult(name, "FAIL", detail, elapsed)
+    elapsed = time.perf_counter() - t0
+    if tc.xfail:
+        return TestResult(name, "XPASS", "unexpected pass", elapsed)
+    return TestResult(name, "PASS", "", elapsed)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="llvm-lit style runner for csrun")
+    ap.add_argument("paths", nargs="*", default=[], help="Suite dirs or individual .test files")
+    ap.add_argument("--csrun", type=Path, default=None, help="Path to csrun binary")
+    ap.add_argument("--repo", type=Path, default=None, help="Repo root (default: parent of tools/)")
+    ap.add_argument("--filter", default=None, help="Regex filter on test relative path")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--timeout", type=float, default=120.0, help="Per-RUN timeout seconds")
+    args = ap.parse_args(argv)
+
+    tool_dir = Path(__file__).resolve().parent
+    repo = (args.repo or tool_dir.parent).resolve()
+    default_suite = repo / "tests" / "lit"
+
+    csrun = args.csrun
+    if csrun is None:
+        for cand in (repo / "build" / "bin" / "csrun", Path(shutil.which("csrun") or "")):
+            if cand and cand.is_file():
+                csrun = cand
+                break
+    if csrun is None or not csrun.is_file():
+        print("error: csrun binary not found (pass --csrun)", file=sys.stderr)
+        return 2
+    csrun = csrun.resolve()
+
+    roots: list[Path] = []
+    singles: list[Path] = []
+    if not args.paths:
+        roots.append(default_suite)
+    else:
+        for p in args.paths:
+            path = Path(p).resolve()
+            if path.is_file() and path.suffix == ".test":
+                singles.append(path)
+            elif path.is_dir():
+                roots.append(path)
+            else:
+                print(f"error: not a suite or .test: {path}", file=sys.stderr)
+                return 2
+
+    filter_re = re.compile(args.filter) if args.filter else None
+    tests: list[TestCase] = []
+    for root in roots:
+        if not root.is_dir():
+            print(f"error: missing suite {root}", file=sys.stderr)
+            return 2
+        tests.extend(discover_tests(root, filter_re))
+    for path in singles:
+        suite_root = path.parent
+        # Walk up to tests/lit if possible
+        for parent in [path.parent, *path.parents]:
+            if parent.name == "lit" and parent.parent.name == "tests":
+                suite_root = parent
+                break
+        tc = parse_test(path, suite_root)
+        rel = tc.relative
+        if filter_re and not filter_re.search(rel):
+            continue
+        if tc.run:
+            tests.append(tc)
+
+    # de-dup by path
+    seen: set[Path] = set()
+    uniq: list[TestCase] = []
+    for tc in tests:
+        if tc.path in seen:
+            continue
+        seen.add(tc.path)
+        uniq.append(tc)
+    tests = uniq
+
+    if not tests:
+        print("error: no tests found", file=sys.stderr)
+        return 2
+
+    features = feature_set(csrun, repo)
+    if args.verbose:
+        print(f"features: {', '.join(sorted(features))}")
+        print(f"csrun: {csrun}")
+
+    print(f"-- Testing: {len(tests)} tests, 1 workers --")
+    t0 = time.perf_counter()
+    results: list[TestResult] = []
+    for i, tc in enumerate(tests, 1):
+        r = run_test(tc, csrun=csrun, repo=repo, features=features, timeout=args.timeout, verbose=args.verbose)
+        results.append(r)
+        extra = f" ({r.detail})" if r.detail and r.status != "PASS" else ""
+        print(f"{r.status}: {r.name} ({i} of {len(tests)}){extra}", flush=True)
+
+    elapsed = time.perf_counter() - t0
+    by_code: dict[str, list[TestResult]] = {k: [] for k in RESULT_ORDER}
+    for r in results:
+        by_code.setdefault(r.status, []).append(r)
+
+    # llvm-lit style: list failing groups explicitly
+    for code in RESULT_ORDER:
+        label, is_failure = RESULT_LABELS.get(code, (code, True))
+        group = by_code.get(code) or []
+        if not group or not is_failure:
+            continue
+        print("*" * 20)
+        print(f"{label} Tests ({len(group)}):")
+        for r in group:
+            print(f"  {r.name}")
+        print()
+
+    print(f"\nTesting Time: {elapsed:.2f}s")
+    print(f"\nTotal Discovered Tests: {len(results)}")
+    summary_rows: list[tuple[str, int]] = []
+    for code in RESULT_ORDER:
+        n = len(by_code.get(code) or [])
+        if not n:
+            continue
+        label, _ = RESULT_LABELS.get(code, (code, False))
+        summary_rows.append((label, n))
+    if summary_rows:
+        max_label = max(len(l) for l, _ in summary_rows)
+        max_count = max(len(str(n)) for _, n in summary_rows)
+        for label, n in summary_rows:
+            pct = 100.0 * n / len(results)
+            print(f"  {label.ljust(max_label)}: {str(n).rjust(max_count)} ({pct:.2f}%)")
+
+    # Fail the process on FAIL / XPASS / TIMEOUT (unexpected failures)
+    if by_code.get("FAIL") or by_code.get("XPASS") or by_code.get("TIMEOUT"):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

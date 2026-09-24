@@ -1,0 +1,2 @@
+# REQUIRES: vulkan, gpu, examples
+# RUN: %csrun %repo/examples/matmul/matmul.yaml --backend vulkan --format json --vendor-counters off --no-benchmark

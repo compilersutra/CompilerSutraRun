@@ -16,7 +16,7 @@
 | `CSRUN_ENABLE_HIP` | ON | HIP/ROCm + hiprtc |
 | `CSRUN_ENABLE_CUDA` | OFF | CUDA (needs toolkit + NVIDIA) |
 | `CSRUN_ENABLE_D3D12` | OFF | Windows D3D12/DXIL |
-| `CSRUN_ENABLE_TESTS` | ON | GoogleTest unit tests |
+| `CSRUN_ENABLE_TESTS` | ON | GoogleTest unit tests + `check-csrun` (csrun-lit) |
 
 ## Libraries
 
@@ -32,6 +32,18 @@
 ## CI
 
 GitHub Actions builds on Ubuntu with Vulkan/OpenGL headers enabled and OpenCL/HIP off (no ROCm on runners). Unit tests must pass without a discrete GPU.
+
+## csrun-lit (GPU / integration)
+
+llvm-lit style suite under `tests/lit/` (see that README). After building:
+
+```bash
+./tools/csrun-lit
+# or
+cmake --build build --target check-csrun
+```
+
+Compile tests need `glslangValidator`; execute tests need a Vulkan device (`REQUIRES: vulkan, gpu`).
 
 ## Local GPU notes
 

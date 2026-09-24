@@ -1,0 +1,2 @@
+# REQUIRES: glslang
+# RUN: %csrun --compile-spv %repo/examples/matmul/matmul.comp -o %t.comp.spv

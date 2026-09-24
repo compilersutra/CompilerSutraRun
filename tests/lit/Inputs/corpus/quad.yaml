@@ -1,0 +1,14 @@
+name: quad
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/offscreen/quad.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/offscreen/quad.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

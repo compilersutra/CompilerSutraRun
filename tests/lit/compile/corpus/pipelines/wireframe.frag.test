@@ -1,0 +1,3 @@
+# Corpus compile: pipelines/wireframe.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/pipelines/wireframe.frag -o %t.spv

@@ -1,0 +1,3 @@
+# Corpus compile: conditionalrender/model.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/conditionalrender/model.vert -o %t.spv

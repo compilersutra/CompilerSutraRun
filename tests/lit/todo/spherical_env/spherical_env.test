@@ -1,0 +1,5 @@
+# TODO feature: spherical_env
+# When implemented: move to execute/corpus/spherical_env/ and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/spherical_env.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

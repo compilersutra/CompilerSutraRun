@@ -1,0 +1,5 @@
+# TODO feature: gears
+# When implemented: move to execute/corpus/gears/ and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/gears.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

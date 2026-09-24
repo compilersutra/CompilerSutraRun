@@ -1,0 +1,7 @@
+# TODO feature: geometry
+# When implemented: move this test (+ Inputs/todo/geometry.yaml) to
+#   tests/lit/execute/corpus/geometry/
+# and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/geometry.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

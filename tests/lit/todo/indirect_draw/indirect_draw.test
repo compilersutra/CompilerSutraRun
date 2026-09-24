@@ -1,0 +1,5 @@
+# TODO feature: indirect_draw
+# When implemented: move to tests/lit/execute/corpus/indirect_draw/ and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/indirect_draw.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

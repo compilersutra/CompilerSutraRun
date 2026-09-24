@@ -1,0 +1,7 @@
+# TODO feature: tessellation
+# When implemented: move this test (+ Inputs/todo/tessellation.yaml) to
+#   tests/lit/execute/corpus/tessellation/
+# and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/tessellation.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

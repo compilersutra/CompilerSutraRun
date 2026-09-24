@@ -1,0 +1,14 @@
+name: corpus_occlusion
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/occlusionquery/simple.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/occlusionquery/simple.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false
