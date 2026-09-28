@@ -665,56 +665,111 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
   if (r != VK_SUCCESS)
     return fail(vkError("vkCreatePipelineLayout failed", r));
 
-  auto raygenOr = createShader(device, req.raygenSpv);
-  if (!raygenOr)
-    return fail(raygenOr.error());
-  raygen = raygenOr.value();
-  auto missOr = createShader(device, req.missSpv);
-  if (!missOr)
-    return fail(missOr.error());
-  miss = missOr.value();
-  auto hitOr = createShader(device, req.closestHitSpv);
-  if (!hitOr)
-    return fail(hitOr.error());
-  closestHit = hitOr.value();
-  VkPipelineShaderStageCreateInfo stages[3]{};
-  const VkShaderStageFlagBits stageFlags[3] = {
-      VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
-      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
-  const VkShaderModule modules[3] = {raygen, miss, closestHit};
-  for (uint32_t i = 0; i < 3; ++i) {
+  // Build the stage and group lists from whatever the workload actually declares. A stage
+  // that is declared but not bound is a real shader that never runs, which is not the same
+  // as a workload that omits it, so the pipeline has to be sized from the request.
+  struct StageEntry {
+    VkShaderStageFlagBits flag;
+    VkShaderModule module;
+    const char *label;
+  };
+  struct GroupEntry {
+    VkRayTracingShaderGroupTypeKHR type;
+    uint32_t general = VK_SHADER_UNUSED_KHR;
+    uint32_t closestHit = VK_SHADER_UNUSED_KHR;
+    uint32_t anyHit = VK_SHADER_UNUSED_KHR;
+    uint32_t intersection = VK_SHADER_UNUSED_KHR;
+  };
+
+  std::vector<StageEntry> stageEntries;
+  std::vector<GroupEntry> groupEntries;
+
+  auto addShader = [&](VkShaderStageFlagBits flag, const std::filesystem::path &path,
+                       const char *label) -> Expected<VkShaderModule> {
+    auto mod = createShader(device, path);
+    if (!mod)
+      return mod.error();
+    stageEntries.push_back({flag, mod.value(), label});
+    return mod.value();
+  };
+
+  // Group order fixes the shader binding table layout: raygen, miss, hit group, callable.
+  // Keep that order so the region offsets below stay correct.
+  uint32_t raygenIndex = stageEntries.size();
+  if (auto m = addShader(VK_SHADER_STAGE_RAYGEN_BIT_KHR, req.raygenSpv, "raygen"); !m)
+    return fail(m.error());
+  uint32_t missIndex = stageEntries.size();
+  if (auto m = addShader(VK_SHADER_STAGE_MISS_BIT_KHR, req.missSpv, "miss"); !m)
+    return fail(m.error());
+  uint32_t closestHitIndex = stageEntries.size();
+  if (auto m = addShader(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, req.closestHitSpv, "closest-hit"); !m)
+    return fail(m.error());
+
+  GroupEntry hitGroup;
+  hitGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+  hitGroup.closestHit = closestHitIndex;
+  if (req.anyHitSpv) {
+    uint32_t idx = stageEntries.size();
+    if (auto m = addShader(VK_SHADER_STAGE_ANY_HIT_BIT_KHR, *req.anyHitSpv, "any-hit"); !m)
+      return fail(m.error());
+    hitGroup.anyHit = idx;
+  }
+  if (req.intersectionSpv) {
+    uint32_t idx = stageEntries.size();
+    if (auto m =
+            addShader(VK_SHADER_STAGE_INTERSECTION_BIT_KHR, *req.intersectionSpv, "intersection");
+        !m)
+      return fail(m.error());
+    hitGroup.intersection = idx;
+  }
+  groupEntries.push_back({VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, raygenIndex});
+  groupEntries.push_back({VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, missIndex});
+  groupEntries.push_back(hitGroup);
+  for (const auto &callable : req.callableSpv) {
+    uint32_t idx = stageEntries.size();
+    if (auto m = addShader(VK_SHADER_STAGE_CALLABLE_BIT_KHR, callable, "callable"); !m)
+      return fail(m.error());
+    groupEntries.push_back({VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, idx});
+  }
+
+  std::vector<VkPipelineShaderStageCreateInfo> stages(stageEntries.size());
+  for (size_t i = 0; i < stageEntries.size(); ++i) {
     stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[i].stage = stageFlags[i];
-    stages[i].module = modules[i];
+    stages[i].stage = stageEntries[i].flag;
+    stages[i].module = stageEntries[i].module;
     stages[i].pName = "main";
   }
-  VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
-  for (auto &group : groups) {
-    group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-    group.generalShader = VK_SHADER_UNUSED_KHR;
-    group.closestHitShader = VK_SHADER_UNUSED_KHR;
-    group.anyHitShader = VK_SHADER_UNUSED_KHR;
-    group.intersectionShader = VK_SHADER_UNUSED_KHR;
+  std::vector<VkRayTracingShaderGroupCreateInfoKHR> groups(groupEntries.size());
+  for (size_t i = 0; i < groupEntries.size(); ++i) {
+    const GroupEntry &g = groupEntries[i];
+    groups[i].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+    groups[i].type = g.type;
+    groups[i].generalShader = g.general;
+    groups[i].closestHitShader = g.closestHit;
+    groups[i].anyHitShader = g.anyHit;
+    groups[i].intersectionShader = g.intersection;
   }
-  groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-  groups[0].generalShader = 0;
-  groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-  groups[1].generalShader = 1;
-  groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-  groups[2].closestHitShader = 2;
+  {
+    std::string names;
+    for (const auto &s : stageEntries) {
+      if (!names.empty())
+        names += " + ";
+      names += s.label;
+    }
+    steps.push_back("created ray-tracing pipeline: " + names);
+  }
   VkRayTracingPipelineCreateInfoKHR pipelineCi{
       VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-  pipelineCi.stageCount = 3;
-  pipelineCi.pStages = stages;
-  pipelineCi.groupCount = 3;
-  pipelineCi.pGroups = groups;
+  pipelineCi.stageCount = static_cast<uint32_t>(stages.size());
+  pipelineCi.pStages = stages.data();
+  pipelineCi.groupCount = static_cast<uint32_t>(groups.size());
+  pipelineCi.pGroups = groups.data();
   pipelineCi.maxPipelineRayRecursionDepth = 1;
   pipelineCi.layout = pipelineLayout;
   r = fn.createPipelines(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineCi, nullptr,
                          &pipeline);
   if (r != VK_SUCCESS)
     return fail(vkError("vkCreateRayTracingPipelinesKHR failed", r));
-  steps.push_back("created raygen + miss + closest-hit pipeline");
 
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayProperties{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
@@ -726,12 +781,13 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
       alignUp(handleSize, rayProperties.shaderGroupHandleAlignment);
   const uint32_t recordSlot =
       alignUp(recordStride, rayProperties.shaderGroupBaseAlignment);
-  std::vector<uint8_t> handles(static_cast<size_t>(handleSize) * 3);
-  r = fn.getGroupHandles(device, pipeline, 0, 3, handles.size(), handles.data());
+  const uint32_t groupCount = static_cast<uint32_t>(groupEntries.size());
+  std::vector<uint8_t> handles(static_cast<size_t>(handleSize) * groupCount);
+  r = fn.getGroupHandles(device, pipeline, 0, groupCount, handles.size(), handles.data());
   if (r != VK_SUCCESS)
     return fail(vkError("vkGetRayTracingShaderGroupHandlesKHR failed", r));
   auto sbtOr = createBuffer(
-      physical, device, static_cast<VkDeviceSize>(recordSlot) * 3,
+      physical, device, static_cast<VkDeviceSize>(recordSlot) * groupCount,
       VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
   if (!sbtOr)
@@ -743,18 +799,22 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
     return fail(vkError("vkMapMemory (SBT) failed", r));
   std::memset(sbtMapped, 0, static_cast<size_t>(sbt.size));
   auto *sbtBytes = static_cast<uint8_t *>(sbtMapped);
-  for (uint32_t i = 0; i < 3; ++i)
+  for (uint32_t i = 0; i < groupCount; ++i)
     std::memcpy(sbtBytes + static_cast<size_t>(i) * recordSlot,
                 handles.data() + static_cast<size_t>(i) * handleSize, handleSize);
   vkUnmapMemory(device, sbt.memory);
   const VkDeviceAddress sbtAddress = bufferAddress(device, fn, sbt.handle);
+  // Group order is raygen, miss, hit group, then any callables, so the region offsets are
+  // fixed by position. A callable region is only meaningful when a callable exists.
   VkStridedDeviceAddressRegionKHR raygenRegion{sbtAddress, recordStride, recordStride};
   VkStridedDeviceAddressRegionKHR missRegion{sbtAddress + recordSlot, recordStride,
                                               recordStride};
   VkStridedDeviceAddressRegionKHR hitRegion{sbtAddress + recordSlot * 2, recordStride,
                                              recordStride};
   VkStridedDeviceAddressRegionKHR callableRegion{};
-  steps.push_back("created shader binding table");
+  if (groupCount > 3)
+    callableRegion = {sbtAddress + recordSlot * 3, recordStride, recordStride};
+  steps.push_back("created shader binding table (" + std::to_string(groupCount) + " group(s))");
 
   VkDescriptorPoolSize poolSizes[3] = {
       {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},

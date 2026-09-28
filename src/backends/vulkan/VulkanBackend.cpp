@@ -159,7 +159,21 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
       smoke.closestHitSpv = compiled.value().spvPath;
     else if (compiled.value().stage == ShaderStage::Miss)
       smoke.missSpv = compiled.value().spvPath;
-    else {
+    else if (compiled.value().stage == ShaderStage::Callable) {
+      smoke.callableSpv.push_back(compiled.value().spvPath);
+      // A callable shader is a general shader, so it does not change the raygen+hit+miss
+      // requirement below.
+    } else if (compiled.value().stage == ShaderStage::AnyHit) {
+      if (smoke.anyHitSpv)
+        return Error::make(ErrorCode::InvalidWorkload,
+                           "ray tracing execute takes at most one any-hit shader");
+      smoke.anyHitSpv = compiled.value().spvPath;
+    } else if (compiled.value().stage == ShaderStage::Intersection) {
+      if (smoke.intersectionSpv)
+        return Error::make(ErrorCode::InvalidWorkload,
+                           "ray tracing execute takes at most one intersection shader");
+      smoke.intersectionSpv = compiled.value().spvPath;
+    } else {
       Error e = Error::make(ErrorCode::UnsupportedOperation,
                             std::string("Vulkan execute does not support shader stage '") +
                                 std::string(toString(compiled.value().stage)) + "' yet (" +
@@ -183,6 +197,9 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
     rt.raygenSpv = smoke.raygenSpv;
     rt.closestHitSpv = smoke.closestHitSpv;
     rt.missSpv = smoke.missSpv;
+    rt.callableSpv = smoke.callableSpv;
+    rt.anyHitSpv = smoke.anyHitSpv;
+    rt.intersectionSpv = smoke.intersectionSpv;
     rt.deviceIndex = smoke.deviceIndex;
     rt.width = smoke.width;
     rt.height = smoke.height;

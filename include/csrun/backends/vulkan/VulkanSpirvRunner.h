@@ -34,6 +34,9 @@ struct VulkanSmokeRequest {
   std::filesystem::path raygenSpv; // optional RT
   std::filesystem::path closestHitSpv; // optional RT
   std::filesystem::path missSpv; // optional RT
+  std::vector<std::filesystem::path> callableSpv; // optional RT
+  std::optional<std::filesystem::path> anyHitSpv; // optional RT
+  std::optional<std::filesystem::path> intersectionSpv; // optional RT
   /// nullopt = auto-pick (prefer perf_query / RADV); set to force a physical index.
   std::optional<std::uint32_t> deviceIndex;
   /// When true (graphics): real Vulkan WSI present (Xlib surface + swapchain).

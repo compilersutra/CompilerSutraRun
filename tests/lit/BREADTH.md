@@ -7,26 +7,26 @@ One representative workload **per sample folder**. **Scan breadth-first**, then 
 ./tools/csrun-breadth
 ```
 
-Last run: **PASS=78 FAIL=17 SKIP=0** (137.7s)
+Last run: **PASS=82 FAIL=13 SKIP=0** (15.7s)
 
 ## Buckets (priority = fail count)
 
 | Bucket | Count | Meaning | Next action |
 |--------|------:|---------|-------------|
-| `PASS` | 78 | Works today | Keep in execute/corpus regression |
-| `FAIL_BLACK` | 7 | Runs but black / wrong | data: push/UBO/draw path |
-| `FAIL_STAGE` | 4 | Missing pipeline stage | todo: geometry / tess / mesh / raytracing |
-| `FAIL_OTHER` | 3 | other | inspect .cache/breadth-scan/<sample>.log |
+| `PASS` | 82 | Works today | Keep in execute/corpus regression |
+| `FAIL_BLACK` | 6 | Runs but black / wrong | data: push/UBO/draw path |
+| `FAIL_OTHER` | 4 | other | inspect .cache/breadth-scan/<sample>.log |
 | `FAIL_COMPILE` | 1 | glslang fail | compile XFAIL or toolchain |
 | `FAIL_COMPUTE_RES` | 1 | compute resources | extend compute generic |
 | `FAIL_DESC_KIND` | 1 | Unknown descriptor type | todo: ray_query / accel / new kinds |
 
 ## Samples by bucket
 
-### PASS (78)
+### PASS (82)
 
 - `base`
 - `bloom`
+- `bufferdeviceaddress`
 - `computecloth`
 - `computecullandlod`
 - `computeheadless`
@@ -78,7 +78,10 @@ Last run: **PASS=78 FAIL=17 SKIP=0** (137.7s)
 - `pushdescriptors`
 - `radialblur`
 - `raytracingbasic`
+- `raytracingcallable`
+- `raytracingintersection`
 - `raytracingpositionfetch`
+- `raytracingtextures`
 - `renderheadless`
 - `screenshot`
 - `shaderobjects`
@@ -104,9 +107,8 @@ Last run: **PASS=78 FAIL=17 SKIP=0** (137.7s)
 - `viewportarray`
 - `vulkanscene`
 
-### FAIL_BLACK (7)
+### FAIL_BLACK (6)
 
-- `bufferdeviceaddress` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `deferred` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `displacement` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `offscreen` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
@@ -114,15 +116,9 @@ Last run: **PASS=78 FAIL=17 SKIP=0** (137.7s)
 - `ssao` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `terraintessellation` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 
-### FAIL_STAGE (4)
+### FAIL_OTHER (4)
 
-- `raytracingcallable` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'callable' yet (callable1.rcall)`
-- `raytracinggltf` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'anyhit' yet (anyhit.rahit) [bac`
-- `raytracingintersection` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'intersection' yet (intersection`
-- `raytracingtextures` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'anyhit' yet (anyhit.rahit) [bac`
-
-### FAIL_OTHER (3)
-
+- `raytracinggltf` — `nonzero`
 - `raytracingreflections` — `nonzero`
 - `raytracingsbtdata` — `nonzero`
 - `raytracingshadows` — `nonzero`
