@@ -110,6 +110,7 @@ def feature_set(csrun: Path, repo: Path) -> set[str]:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=radv_env(repo),
                 check=False,
             )
             if r.returncode == 0:
@@ -130,6 +131,34 @@ def missing_requires(needed: Iterable[str], have: set[str]) -> list[str]:
 
 def hit_unsupported(markers: Iterable[str], have: set[str]) -> list[str]:
     return [f for f in markers if f in have]
+
+
+def radv_env(repo: Path) -> dict[str, str]:
+    """Source scripts/env-mesa-main-radv.sh and return the resulting environment.
+
+    Without this the Vulkan ICD is whatever auto-discovery picks, which on an AMD box is
+    usually AMDVLPI on the iGPU -- a different driver than the one results get attributed
+    to, and one with a subpass-input defect. Pinning RADV keeps a run reproducible no matter
+    how the tool was invoked.
+    """
+    script = repo / "scripts" / "env-mesa-main-radv.sh"
+    if not script.is_file():
+        return dict(os.environ)
+    r = subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(script))} >/dev/null 2>&1; env"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        return dict(os.environ)
+    env = dict(os.environ)
+    for line in r.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key] = value
+    return env
 
 
 def substitute(cmd: str, *, csrun: Path, repo: Path, test: Path, tmp: Path) -> str:
@@ -158,6 +187,7 @@ def run_test(tc: TestCase, *, csrun: Path, repo: Path, features: set[str], timeo
         return TestResult(name, "UNSUPPORTED", f"unsupported {','.join(bad)}")
 
     t0 = time.perf_counter()
+    env = radv_env(repo)
     with tempfile.TemporaryDirectory(prefix="csrun-lit-") as td:
         tmp = Path(td)
         for i, raw in enumerate(tc.run):
@@ -169,6 +199,7 @@ def run_test(tc: TestCase, *, csrun: Path, repo: Path, features: set[str], timeo
                     cmdline,
                     shell=True,
                     cwd=str(repo),
+                    env=env,
                     capture_output=not verbose,
                     text=True,
                     timeout=timeout,

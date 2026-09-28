@@ -3,17 +3,47 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
+import shlex
 import subprocess
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-CSRUN = Path(__import__("os").environ.get("CSRUN_BIN", REPO / "build/bin/csrun"))
+CSRUN = Path(os.environ.get("CSRUN_BIN", REPO / "build/bin/csrun"))
 GLSL = REPO / "external/shader-corpus/Vulkan/shaders/glsl"
 OUT = REPO / ".cache/breadth-scan"
 MATRIX = REPO / "tests/lit/BREADTH.md"
+
+
+def radv_env() -> dict[str, str]:
+    """Source scripts/env-mesa-main-radv.sh and return the resulting environment.
+
+    Without this the Vulkan ICD is whatever auto-discovery picks, which on an AMD box is
+    usually AMDVLPI on the iGPU -- a different driver than the one results get attributed
+    to, and one with a subpass-input defect. Pinning RADV keeps a run reproducible no matter
+    how the tool was invoked.
+    """
+    script = REPO / "scripts" / "env-mesa-main-radv.sh"
+    if not script.is_file():
+        return dict(os.environ)
+    r = subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(script))} >/dev/null 2>&1; env"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        return dict(os.environ)
+    env = dict(os.environ)
+    for line in r.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key] = value
+    return env
 
 
 def list_ext(d: Path, ext: str):
@@ -143,6 +173,7 @@ def main() -> int:
         r = subprocess.run(
             [str(CSRUN), str(yaml), "--vendor-counters", "off", "--no-benchmark", "--log-level", "error"],
             cwd=REPO,
+            env=radv_env(),
             capture_output=True,
             text=True,
         )
