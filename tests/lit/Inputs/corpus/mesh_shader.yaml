@@ -1,5 +1,5 @@
 # Needs mesh (+ task) stages in the graphics pipeline.
-name: todo_mesh_shader
+name: corpus_mesh_shader
 operation: spirv
 backend: vulkan
 shaders:

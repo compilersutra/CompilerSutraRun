@@ -88,7 +88,8 @@ target_link_libraries(csrun_benchmark PUBLIC csrun_core)
 target_include_directories(csrun_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(csrun_validation
-  src/validation/Comparator.cpp)
+  src/validation/Comparator.cpp
+  src/validation/FrameCheck.cpp)
 target_link_libraries(csrun_validation PUBLIC csrun_core)
 target_include_directories(csrun_validation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -127,6 +128,7 @@ if(CSRUN_ENABLE_VULKAN)
     add_library(csrun_backend_vulkan
       src/backends/vulkan/VulkanBackend.cpp
       src/backends/vulkan/VulkanSpirvRunner.cpp
+      src/backends/vulkan/VulkanRayTracingSmoke.cpp
       src/backends/vulkan/VulkanGraphicsResources.cpp
       src/backends/vulkan/VulkanComputeResources.cpp
       src/backends/vulkan/VulkanWsiPresenter.cpp
@@ -293,7 +295,10 @@ if(CSRUN_ENABLE_TESTS)
     tests/unit/backend/BackendSelectorTest.cpp
     tests/unit/benchmark/StatisticsTest.cpp
     tests/unit/validation/ComparatorTest.cpp
-    tests/unit/result/JsonWriterTest.cpp)
+    tests/unit/validation/FrameCheckTest.cpp
+    tests/unit/result/JsonWriterTest.cpp
+    tests/unit/compiler/SpirvReflectTest.cpp
+    tests/unit/backends/vulkan/VulkanHandleTest.cpp)
   target_link_libraries(csrun_unit_tests PRIVATE csrun_runtime GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(csrun_unit_tests)

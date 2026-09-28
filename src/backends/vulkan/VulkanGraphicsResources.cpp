@@ -174,6 +174,16 @@ VkShaderStageFlags stageFlags(const SpirvDescriptorBinding &b) {
     f |= VK_SHADER_STAGE_VERTEX_BIT;
   if (b.fromFragment)
     f |= VK_SHADER_STAGE_FRAGMENT_BIT;
+  if (b.fromGeometry)
+    f |= VK_SHADER_STAGE_GEOMETRY_BIT;
+  if (b.fromTessControl)
+    f |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+  if (b.fromTessEvaluation)
+    f |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+  if (b.fromMesh)
+    f |= VK_SHADER_STAGE_MESH_BIT_EXT;
+  if (b.fromTask)
+    f |= VK_SHADER_STAGE_TASK_BIT_EXT;
   if (f == 0)
     f = VK_SHADER_STAGE_ALL_GRAPHICS;
   return f;
@@ -284,6 +294,16 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
         res.pushStages |= VK_SHADER_STAGE_VERTEX_BIT;
       if (pc.fromFragment)
         res.pushStages |= VK_SHADER_STAGE_FRAGMENT_BIT;
+      if (pc.fromGeometry)
+        res.pushStages |= VK_SHADER_STAGE_GEOMETRY_BIT;
+      if (pc.fromTessControl)
+        res.pushStages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+      if (pc.fromTessEvaluation)
+        res.pushStages |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+      if (pc.fromMesh)
+        res.pushStages |= VK_SHADER_STAGE_MESH_BIT_EXT;
+      if (pc.fromTask)
+        res.pushStages |= VK_SHADER_STAGE_TASK_BIT_EXT;
     }
     if (res.pushStages == 0)
       res.pushStages = VK_SHADER_STAGE_ALL_GRAPHICS;

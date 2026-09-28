@@ -56,10 +56,6 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | `buffer_device_address` | BDA + address push constants |
 | `indirect_draw` | `vkCmdDrawIndirect` |
 | `inline_uniform` | inline uniform blocks |
-| `geometry` | geometry stage |
-| `tessellation` | tesc/tese stages |
-| `mesh_shader` | task/mesh stages |
-| `raytracing` | raygen/rchit/rmiss |
 | `ray_query` | ray query / AS |
 | `spherical_env` | env-map / UBO fill (black draw) |
 | `gears` | real model/camera data (black draw) |

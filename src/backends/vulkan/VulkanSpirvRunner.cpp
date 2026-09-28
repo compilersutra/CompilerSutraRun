@@ -9,6 +9,7 @@
 #include "csrun/compiler/SpirvReflect.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
+#include "csrun/validation/FrameCheck.h"
 
 #include <vulkan/vulkan.h>
 
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace csrun {
@@ -67,10 +69,12 @@ uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryProper
 
 Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   const bool wantCompute = !req.computeSpv.empty();
-  const bool wantGraphics = !req.vertexSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantMeshGraphics = !req.meshSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantClassicGraphics = !req.vertexSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantGraphics = wantClassicGraphics || wantMeshGraphics;
   if (!wantCompute && !wantGraphics) {
     return Error::make(ErrorCode::InvalidWorkload,
-                       "provide --spv (compute) or --vert-spv + --frag-spv (graphics)");
+                       "provide compute SPIR-V, vert+frag, or mesh+frag graphics SPIR-V");
   }
 
   VulkanSmokeResult out;
@@ -165,11 +169,100 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   const bool wantIndexing = indexingQuery.runtimeDescriptorArray == VK_TRUE &&
                             indexingQuery.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
 
+  const bool wantGeometry = wantGraphics && !req.geometrySpv.empty();
+  const bool wantTess = wantGraphics && (!req.tessControlSpv.empty() || !req.tessEvalSpv.empty());
+  if (wantGeometry && !supportedFeatures.geometryShader) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::UnsupportedOperation,
+                          "device does not support geometryShader feature");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+  if (wantTess && !supportedFeatures.tessellationShader) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::UnsupportedOperation,
+                          "device does not support tessellationShader feature");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+  if (wantTess && (req.tessControlSpv.empty() || req.tessEvalSpv.empty())) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::InvalidWorkload,
+                          "tessellation requires both tesscontrol and tesseval SPIR-V");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+
   VkPhysicalDeviceFeatures enabledFeatures{};
   if (pipeStatsSupported)
     enabledFeatures.pipelineStatisticsQuery = VK_TRUE;
   if (supportedFeatures.shaderClipDistance)
     enabledFeatures.shaderClipDistance = VK_TRUE;
+  if (wantGeometry)
+    enabledFeatures.geometryShader = VK_TRUE;
+  if (wantTess)
+    enabledFeatures.tessellationShader = VK_TRUE;
+
+  const bool wantMesh = wantGraphics && !req.meshSpv.empty();
+  VkPhysicalDeviceMeshShaderFeaturesEXT meshQuery{};
+  meshQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+  if (wantMesh) {
+    VkPhysicalDeviceFeatures2 mq2{};
+    mq2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    mq2.pNext = &meshQuery;
+    vkGetPhysicalDeviceFeatures2(physical, &mq2);
+    if (!meshQuery.meshShader) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device does not support meshShader (VK_EXT_mesh_shader)");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    if (!req.taskSpv.empty() && !meshQuery.taskShader) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device does not support taskShader (VK_EXT_mesh_shader)");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    // Check required device extensions are present.
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extCount, nullptr);
+    std::vector<VkExtensionProperties> exts(extCount);
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extCount, exts.data());
+    auto hasExt = [&](const char *name) {
+      for (const auto &e : exts)
+        if (std::strcmp(e.extensionName, name) == 0)
+          return true;
+      return false;
+    };
+    if (!hasExt(VK_EXT_MESH_SHADER_EXTENSION_NAME) ||
+        !hasExt(VK_KHR_SPIRV_1_4_EXTENSION_NAME) ||
+        !hasExt(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device missing mesh-shader related extensions");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    deviceExts.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    deviceExts.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+    deviceExts.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+  }
+
+  VkPhysicalDeviceMeshShaderFeaturesEXT enabledMeshFeatures{};
+  enabledMeshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+  if (wantMesh) {
+    enabledMeshFeatures.meshShader = VK_TRUE;
+    if (!req.taskSpv.empty())
+      enabledMeshFeatures.taskShader = VK_TRUE;
+  }
 
   VkPhysicalDeviceDescriptorIndexingFeatures enabledIndexing{};
   enabledIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
@@ -189,7 +282,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   dci.ppEnabledExtensionNames = deviceExts.empty() ? nullptr : deviceExts.data();
-  // Chain: features2 → [indexing] → [perf]
+  // Chain: features2 → [mesh] → [indexing] → [perf]
   void *chain = nullptr;
   if (perfSetup.want) {
     enabledPerfFeatures.pNext = chain;
@@ -199,7 +292,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     enabledIndexing.pNext = chain;
     chain = &enabledIndexing;
   }
-  if (chain || perfSetup.want || wantIndexing) {
+  if (wantMesh) {
+    enabledMeshFeatures.pNext = chain;
+    chain = &enabledMeshFeatures;
+  }
+  if (chain || perfSetup.want || wantIndexing || wantMesh) {
     features2.pNext = chain;
     dci.pNext = &features2;
     dci.pEnabledFeatures = nullptr;
@@ -220,6 +317,8 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       devNote += " (+ VK_KHR_performance_query)";
     if (wantIndexing)
       devNote += " (+ descriptor_indexing)";
+    if (wantMesh)
+      devNote += " (+ mesh_shader)";
     steps.push_back(devNote);
   }
 
@@ -242,7 +341,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
     // Reflect first: UBO / storage-image / multi-set → generic path; else legacy 3-SSBO.
     {
-      auto cRefl = reflectSpirvModule(words.value(), false);
+      auto cRefl = reflectSpirvModule(words.value(), SpirvReflectStage::Fragment);
       if (!cRefl) {
         cleanup();
         return cRefl.error();
@@ -346,7 +445,6 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         sizeof(float) * (isMatmul ? static_cast<VkDeviceSize>(K) * N : n);
     const VkDeviceSize bytesC =
         sizeof(float) * (isMatmul ? static_cast<VkDeviceSize>(M) * N : n);
-    const VkDeviceSize bytes = bytesC; // descriptor range helper for C-sized writes below
 
     std::vector<float> hostA(static_cast<size_t>(bytesA / sizeof(float)));
     std::vector<float> hostB(static_cast<size_t>(bytesB / sizeof(float)));
@@ -840,30 +938,138 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     }
 
     out.mode = "graphics_offscreen";
-    auto vWords = loadWords(req.vertexSpv);
-    auto fWords = loadWords(req.fragmentSpv);
-    if (!vWords) {
-      cleanup();
-      return vWords.error();
+    const bool useMeshPipeline = !req.meshSpv.empty();
+    std::optional<std::vector<uint32_t>> vWords;
+    if (!useMeshPipeline) {
+      auto vw = loadWords(req.vertexSpv);
+      if (!vw) {
+        cleanup();
+        return vw.error();
+      }
+      vWords = std::move(vw.value());
+      steps.push_back("loaded vertex SPIR-V: " + req.vertexSpv.string());
     }
+    auto fWords = loadWords(req.fragmentSpv);
     if (!fWords) {
       cleanup();
       return fWords.error();
     }
-    steps.push_back("loaded vertex SPIR-V: " + req.vertexSpv.string());
     steps.push_back("loaded fragment SPIR-V: " + req.fragmentSpv.string());
 
-    auto vRefl = reflectSpirvModule(vWords.value(), true);
-    if (!vRefl) {
-      cleanup();
-      return vRefl.error();
+    std::optional<std::vector<uint32_t>> gWords;
+    std::optional<std::vector<uint32_t>> tcWords;
+    std::optional<std::vector<uint32_t>> teWords;
+    std::optional<SpirvModuleReflection> gRefl;
+    std::optional<SpirvModuleReflection> tcRefl;
+    std::optional<SpirvModuleReflection> teRefl;
+    if (!req.geometrySpv.empty()) {
+      auto gw = loadWords(req.geometrySpv);
+      if (!gw) {
+        cleanup();
+        return gw.error();
+      }
+      gWords = std::move(gw.value());
+      steps.push_back("loaded geometry SPIR-V: " + req.geometrySpv.string());
+      auto gr = reflectSpirvModule(*gWords, SpirvReflectStage::Geometry);
+      if (!gr) {
+        cleanup();
+        return gr.error();
+      }
+      gRefl = std::move(gr.value());
     }
-    auto fRefl = reflectSpirvModule(fWords.value(), false);
+    if (!req.tessControlSpv.empty()) {
+      auto tw = loadWords(req.tessControlSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      tcWords = std::move(tw.value());
+      steps.push_back("loaded tesscontrol SPIR-V: " + req.tessControlSpv.string());
+      auto tr = reflectSpirvModule(*tcWords, SpirvReflectStage::TessControl);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      tcRefl = std::move(tr.value());
+    }
+    if (!req.tessEvalSpv.empty()) {
+      auto tw = loadWords(req.tessEvalSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      teWords = std::move(tw.value());
+      steps.push_back("loaded tesseval SPIR-V: " + req.tessEvalSpv.string());
+      auto tr = reflectSpirvModule(*teWords, SpirvReflectStage::TessEvaluation);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      teRefl = std::move(tr.value());
+    }
+
+    std::optional<std::vector<uint32_t>> meshWords;
+    std::optional<std::vector<uint32_t>> taskWords;
+    std::optional<SpirvModuleReflection> meshRefl;
+    std::optional<SpirvModuleReflection> taskRefl;
+    if (!req.meshSpv.empty()) {
+      auto mw = loadWords(req.meshSpv);
+      if (!mw) {
+        cleanup();
+        return mw.error();
+      }
+      meshWords = std::move(mw.value());
+      steps.push_back("loaded mesh SPIR-V: " + req.meshSpv.string());
+      auto mr = reflectSpirvModule(*meshWords, SpirvReflectStage::Mesh);
+      if (!mr) {
+        cleanup();
+        return mr.error();
+      }
+      meshRefl = std::move(mr.value());
+    }
+    if (!req.taskSpv.empty()) {
+      auto tw = loadWords(req.taskSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      taskWords = std::move(tw.value());
+      steps.push_back("loaded task SPIR-V: " + req.taskSpv.string());
+      auto tr = reflectSpirvModule(*taskWords, SpirvReflectStage::Task);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      taskRefl = std::move(tr.value());
+    }
+
+    SpirvModuleReflection vReflValue{};
+    if (vWords) {
+      auto vRefl = reflectSpirvModule(*vWords, SpirvReflectStage::Vertex);
+      if (!vRefl) {
+        cleanup();
+        return vRefl.error();
+      }
+      vReflValue = std::move(vRefl.value());
+    }
+    auto fRefl = reflectSpirvModule(fWords.value(), SpirvReflectStage::Fragment);
     if (!fRefl) {
       cleanup();
       return fRefl.error();
     }
-    const SpirvModuleReflection gfxRefl = mergeSpirvReflections(vRefl.value(), fRefl.value());
+    SpirvExtraStageReflections extra{};
+    if (gRefl)
+      extra.geometry = &*gRefl;
+    if (tcRefl)
+      extra.tessControl = &*tcRefl;
+    if (teRefl)
+      extra.tessEvaluation = &*teRefl;
+    if (meshRefl)
+      extra.mesh = &*meshRefl;
+    if (taskRefl)
+      extra.task = &*taskRefl;
+    const SpirvModuleReflection gfxRefl =
+        mergeSpirvReflections(vReflValue, fRefl.value(), extra);
     auto gfxRes = vulkanCreateGraphicsResources(physical, device, queue, queueFamily, gfxRefl, steps);
     if (!gfxRes) {
       cleanup();
@@ -871,19 +1077,92 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     }
     VulkanGraphicsResources resources = std::move(gfxRes.value());
 
-    auto vMod = createModule(device, vWords.value(), steps);
-    if (!vMod) {
-      vulkanDestroyGraphicsResources(device, resources);
-      cleanup();
-      return vMod.error();
+    VkShaderModule vMod = VK_NULL_HANDLE;
+    if (vWords) {
+      auto vm = createModule(device, *vWords, steps);
+      if (!vm) {
+        vulkanDestroyGraphicsResources(device, resources);
+        cleanup();
+        return vm.error();
+      }
+      vMod = vm.value();
     }
     auto fMod = createModule(device, fWords.value(), steps);
     if (!fMod) {
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return fMod.error();
     }
+    VkShaderModule gMod = VK_NULL_HANDLE;
+    VkShaderModule tcMod = VK_NULL_HANDLE;
+    VkShaderModule teMod = VK_NULL_HANDLE;
+    VkShaderModule meshMod = VK_NULL_HANDLE;
+    VkShaderModule taskMod = VK_NULL_HANDLE;
+    auto failMods = [&](const Error &e) -> Error {
+      if (taskMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, taskMod, nullptr);
+      if (meshMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, meshMod, nullptr);
+      if (teMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, teMod, nullptr);
+      if (tcMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, tcMod, nullptr);
+      if (gMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, gMod, nullptr);
+      vkDestroyShaderModule(device, fMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      cleanup();
+      return e;
+    };
+    if (gWords) {
+      auto gm = createModule(device, *gWords, steps);
+      if (!gm)
+        return failMods(gm.error());
+      gMod = gm.value();
+    }
+    if (tcWords) {
+      auto tm = createModule(device, *tcWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      tcMod = tm.value();
+    }
+    if (teWords) {
+      auto tm = createModule(device, *teWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      teMod = tm.value();
+    }
+    if (meshWords) {
+      auto mm = createModule(device, *meshWords, steps);
+      if (!mm)
+        return failMods(mm.error());
+      meshMod = mm.value();
+    }
+    if (taskWords) {
+      auto tm = createModule(device, *taskWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      taskMod = tm.value();
+    }
+    auto destroyShaderMods = [&]() {
+      if (taskMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, taskMod, nullptr);
+      if (meshMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, meshMod, nullptr);
+      if (teMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, teMod, nullptr);
+      if (tcMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, tcMod, nullptr);
+      if (gMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, gMod, nullptr);
+      vkDestroyShaderModule(device, fMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
+    };
 
     VkPipelineLayout layout = resources.pipelineLayout;
 
@@ -924,23 +1203,42 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     r = vkCreateRenderPass(device, &rpci, nullptr, &renderPass);
     if (r != VK_SUCCESS) {
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return vkError("vkCreateRenderPass failed", r);
     }
     steps.push_back("vkCreateRenderPass");
 
-    VkPipelineShaderStageCreateInfo stagesInfo[2]{};
-    stagesInfo[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stagesInfo[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stagesInfo[0].module = vMod.value();
-    stagesInfo[0].pName = "main";
-    stagesInfo[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stagesInfo[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stagesInfo[1].module = fMod.value();
-    stagesInfo[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stagesInfo[6]{};
+    uint32_t stageCount = 0;
+    auto addStage = [&](VkShaderStageFlagBits stage, VkShaderModule mod) {
+      stagesInfo[stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      stagesInfo[stageCount].stage = stage;
+      stagesInfo[stageCount].module = mod;
+      stagesInfo[stageCount].pName = "main";
+      ++stageCount;
+    };
+    if (useMeshPipeline) {
+      if (taskMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TASK_BIT_EXT, taskMod);
+      addStage(VK_SHADER_STAGE_MESH_BIT_EXT, meshMod);
+      addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fMod.value());
+      steps.push_back("mesh/task stages enabled in graphics pipeline");
+    } else {
+      addStage(VK_SHADER_STAGE_VERTEX_BIT, vMod);
+      if (tcMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, tcMod);
+      if (teMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, teMod);
+      if (gMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_GEOMETRY_BIT, gMod);
+      addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fMod.value());
+      if (tcMod != VK_NULL_HANDLE || teMod != VK_NULL_HANDLE)
+        steps.push_back("tessellation stages enabled in graphics pipeline");
+      if (gMod != VK_NULL_HANDLE)
+        steps.push_back("geometry stage enabled in graphics pipeline");
+    }
 
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -951,9 +1249,14 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vi.pVertexAttributeDescriptions = resources.vertexAttrs.data();
     }
 
+    const bool useTess = (tcMod != VK_NULL_HANDLE && teMod != VK_NULL_HANDLE);
     VkPipelineInputAssemblyStateCreateInfo ia{};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = useTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineTessellationStateCreateInfo tess{};
+    tess.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tess.patchControlPoints = 3;
 
     VkViewport viewport{};
     const uint32_t extentW = std::max(1u, req.width);
@@ -993,10 +1296,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
     VkGraphicsPipelineCreateInfo gpci{};
     gpci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    gpci.stageCount = 2;
+    gpci.stageCount = stageCount;
     gpci.pStages = stagesInfo;
-    gpci.pVertexInputState = &vi;
-    gpci.pInputAssemblyState = &ia;
+    gpci.pVertexInputState = useMeshPipeline ? nullptr : &vi;
+    gpci.pInputAssemblyState = useMeshPipeline ? nullptr : &ia;
+    gpci.pTessellationState = (!useMeshPipeline && useTess) ? &tess : nullptr;
     gpci.pViewportState = &vp;
     gpci.pRasterizationState = &rs;
     gpci.pMultisampleState = &ms;
@@ -1010,12 +1314,26 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (r != VK_SUCCESS) {
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateGraphicsPipelines failed", r);
     }
     steps.push_back("vkCreateGraphicsPipelines");
+
+    PFN_vkCmdDrawMeshTasksEXT cmdDrawMeshTasksEXT = nullptr;
+    if (useMeshPipeline) {
+      cmdDrawMeshTasksEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(
+          vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksEXT"));
+      if (!cmdDrawMeshTasksEXT) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::UnsupportedOperation,
+                           "vkCmdDrawMeshTasksEXT not available");
+      }
+    }
 
     // Offscreen color target
     VkImageCreateInfo imgCi{};
@@ -1035,8 +1353,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateImage failed", r);
     }
@@ -1050,8 +1367,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return Error::make(ErrorCode::ResourceAllocationFailed, "no device-local memory for color image");
     }
@@ -1066,8 +1382,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkAllocateMemory (image) failed", r);
     }
@@ -1090,8 +1405,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateImageView failed", r);
     }
@@ -1113,8 +1427,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateFramebuffer failed", r);
     }
@@ -1137,8 +1450,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateBuffer (staging) failed", r);
     }
@@ -1156,8 +1468,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return Error::make(ErrorCode::ResourceAllocationFailed, "no host-visible memory for staging");
     }
@@ -1176,8 +1487,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkAllocateMemory (staging) failed", r);
     }
@@ -1199,8 +1509,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateCommandPool failed", r);
     }
@@ -1327,7 +1636,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         vulkanCmdBindGraphicsResources(cmd, resources);
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, queryPool, 1);
-        vkCmdDraw(cmd, resources.hasVertexAttrs ? resources.vertexCount : 3, 1, 0, 0);
+        if (useMeshPipeline) {
+          cmdDrawMeshTasksEXT(cmd, 1, 1, 1);
+        } else {
+          vkCmdDraw(cmd, resources.hasVertexAttrs ? resources.vertexCount : 3, 1, 0, 0);
+        }
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, queryPool, 2);
         vkCmdEndRenderPass(cmd);
@@ -1461,8 +1774,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
       cleanup();
     };
 
@@ -1506,25 +1818,87 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     void *mapped = nullptr;
     r = vkMapMemory(device, stagingMem, 0, stagingBytes, 0, &mapped);
     if (r == VK_SUCCESS && mapped) {
-      const auto *px = static_cast<const uint8_t *>(mapped);
-      const uint32_t cx = extentW / 2;
-      const uint32_t cy = extentH / 2;
-      const size_t off = (static_cast<size_t>(cy) * extentW + cx) * 4;
-      out.centerR = px[off + 0];
-      out.centerG = px[off + 1];
-      out.centerB = px[off + 2];
-      out.centerA = px[off + 3];
+      const auto *px = static_cast<const std::uint8_t *>(mapped);
+      const size_t frameBytes = static_cast<size_t>(stagingBytes);
+      const std::vector<std::uint8_t> frame1(px, px + frameBytes);
+      vkUnmapMemory(device, stagingMem);
+      mapped = nullptr;
+
+      std::uint8_t center[4] = {0, 0, 0, 0};
+      frameCenterPixel(frame1.data(), extentW, extentH, center);
+      out.centerR = center[0];
+      out.centerG = center[1];
+      out.centerB = center[2];
+      out.centerA = center[3];
       out.pixelChecked = true;
       steps.push_back("readback center pixel rgba=(" + std::to_string(out.centerR) + "," +
                       std::to_string(out.centerG) + "," + std::to_string(out.centerB) + "," +
                       std::to_string(out.centerA) + ")");
-      out.ok = (out.centerR | out.centerG | out.centerB) != 0;
-      if (!out.ok)
-        steps.push_back("FAIL: center pixel still black (draw may not have covered center)");
-      vkUnmapMemory(device, stagingMem);
+
+      // Re-submit and read back a second time to confirm the draw reproduces.
+      std::vector<std::uint8_t> frame2;
+      if (auto again = recordAndSubmit(false, true, false)) {
+        void *mapped2 = nullptr;
+        if (vkMapMemory(device, stagingMem, 0, stagingBytes, 0, &mapped2) == VK_SUCCESS &&
+            mapped2) {
+          const auto *p2 = static_cast<const std::uint8_t *>(mapped2);
+          frame2.assign(p2, p2 + frameBytes);
+          vkUnmapMemory(device, stagingMem);
+        }
+      }
+      if (frame2.empty())
+        steps.push_back("warning: second readback unavailable; determinism check skipped");
+
+      // Thin geometry (lines/points/mesh) legitimately covers a tiny fraction of the
+      // frame, so the coverage and colour-variety bars are relaxed for those stages.
+      // The reported coverage percentage still makes that sparsity visible.
+      const bool thinGeometry =
+          gMod != VK_NULL_HANDLE || tcMod != VK_NULL_HANDLE || meshMod != VK_NULL_HANDLE;
+      FrameCheckConfig cfg;
+      if (thinGeometry) {
+        cfg.minCoveragePercent = 0.0;
+        cfg.minDistinctColors = 1;
+      }
+      if (!frame2.empty()) {
+        // compareMask is RGB-only by default: shaders that assign just `.rgb` leave the
+        // alpha output component undefined, and drivers fill it with register garbage,
+        // so alpha divergence between two identical draws proves nothing. RGB still
+        // catches real divergence -- ssao and terraintessellation fail this way.
+        const FrameDiff diff =
+            diffFrames(frame1.data(), frame2.data(), frameBytes, extentW, extentH, cfg);
+        if (diff.hasDifference)
+          steps.push_back("determinism: " + std::to_string(diff.differingTexels) +
+                          " differing texels (" + std::to_string(static_cast<int>(
+                              diff.percentDiffering + 0.5)) +
+                          "%), max channel delta " + std::to_string(diff.maxChannelDelta) +
+                          ", first at (" + std::to_string(diff.firstX) + "," +
+                          std::to_string(diff.firstY) + ")");
+      }
+      const FrameCheckResult check = checkFrame(
+          frame1.data(), frame1.size(), extentW, extentH, cfg, frame2.empty() ? nullptr : frame2.data(),
+          frame2.size());
+      out.ok = check.ok;
+      steps.push_back("frame check: " + check.reason);
+      if (!check.ok) {
+        // Disambiguate the two ways a frame can be blank using the occlusion query:
+        // samples passed with no visible output means the shader ran but wrote nothing
+        // (e.g. cleared/discarded colour); no samples means the geometry never covered.
+        if (out.counters.occlusionAvailable) {
+          if (out.counters.occlusionSamplesPassed > 0 && check.coveredPixels == 0)
+            steps.push_back("diagnosis: " + std::to_string(out.counters.occlusionSamplesPassed) +
+                            " occlusion samples passed, so geometry rasterised but produced no "
+                            "visible colour (fragment shader wrote black or discarded)");
+          else if (out.counters.occlusionSamplesPassed == 0)
+            steps.push_back("diagnosis: 0 occlusion samples passed -- geometry did not cover the "
+                            "frame at all");
+        }
+        steps.push_back("FAIL: rendered frame failed evidence checks (coverage/colours/determinism)");
+      }
     } else {
-      steps.push_back("warning: could not map staging for pixel check");
-      out.ok = true;
+      // Never auto-pass: a failed readback means we have no evidence the draw worked.
+      out.ok = false;
+      steps.push_back("FAIL: could not map staging memory for pixel check (vkMapMemory rc=" +
+                      std::to_string(static_cast<int>(r)) + ")");
     }
 
     vulkanDestroyPerfQuerySession(device, perf);
@@ -1544,8 +1918,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vulkanDestroyGraphicsResources(device, resources);
-    vkDestroyShaderModule(device, fMod.value(), nullptr);
-    vkDestroyShaderModule(device, vMod.value(), nullptr);
+    destroyShaderMods();
     steps.push_back("cleanup graphics objects");
   }
 

@@ -1,0 +1,17 @@
+# Tessellation pipeline: vert + tesc + tese + frag (passthrough).
+name: corpus_tessellation
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/tessellation/base.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/tessellation/passthrough.tesc
+  - external/shader-corpus/Vulkan/shaders/glsl/tessellation/passthrough.tese
+  - external/shader-corpus/Vulkan/shaders/glsl/tessellation/base.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

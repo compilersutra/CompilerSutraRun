@@ -31,6 +31,16 @@ enum class SpirvVertexCompType {
   Uint,
 };
 
+enum class SpirvReflectStage {
+  Vertex,
+  Fragment,
+  Geometry,
+  TessControl,
+  TessEvaluation,
+  Mesh,
+  Task,
+};
+
 struct SpirvDescriptorBinding {
   std::uint32_t set = 0;
   std::uint32_t binding = 0;
@@ -40,6 +50,11 @@ struct SpirvDescriptorBinding {
   std::uint32_t sizeBytes = 0;
   bool fromVertex = false;
   bool fromFragment = false;
+  bool fromGeometry = false;
+  bool fromTessControl = false;
+  bool fromTessEvaluation = false;
+  bool fromMesh = false;
+  bool fromTask = false;
 };
 
 struct SpirvVertexAttribute {
@@ -53,6 +68,11 @@ struct SpirvPushConstantRange {
   std::uint32_t size = 0;
   bool fromVertex = false;
   bool fromFragment = false;
+  bool fromGeometry = false;
+  bool fromTessControl = false;
+  bool fromTessEvaluation = false;
+  bool fromMesh = false;
+  bool fromTask = false;
 };
 
 struct SpirvModuleReflection {
@@ -67,13 +87,22 @@ struct SpirvModuleReflection {
   bool usesRuntimeDescriptorArray = false;
 };
 
-/// Reflect one SPIR-V module. `isVertex` marks stage for descriptor stage flags merge.
-Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32_t> &words,
-                                                   bool isVertex);
+struct SpirvExtraStageReflections {
+  const SpirvModuleReflection *geometry = nullptr;
+  const SpirvModuleReflection *tessControl = nullptr;
+  const SpirvModuleReflection *tessEvaluation = nullptr;
+  const SpirvModuleReflection *mesh = nullptr;
+  const SpirvModuleReflection *task = nullptr;
+};
 
-/// Merge vertex + fragment reflections (descriptors by set/binding, attrs from vertex).
+/// Reflect one SPIR-V module; `stage` selects descriptor stage-flag bits.
+Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32_t> &words,
+                                                   SpirvReflectStage stage);
+
+/// Merge vertex + fragment (+ optional geometry / tess) reflections.
 SpirvModuleReflection mergeSpirvReflections(const SpirvModuleReflection &vert,
-                                            const SpirvModuleReflection &frag);
+                                            const SpirvModuleReflection &frag,
+                                            const SpirvExtraStageReflections &extra = {});
 
 std::string_view toString(SpirvDescriptorKind kind);
 

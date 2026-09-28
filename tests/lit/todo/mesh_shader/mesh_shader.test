@@ -1,7 +1,0 @@
-# TODO feature: mesh_shader
-# When implemented: move this test (+ Inputs/todo/mesh_shader.yaml) to
-#   tests/lit/execute/corpus/mesh_shader/
-# and remove XFAIL.
-# REQUIRES: vulkan, gpu, corpus, glslang
-# XFAIL: *
-# RUN: %csrun %repo/tests/lit/Inputs/todo/mesh_shader.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

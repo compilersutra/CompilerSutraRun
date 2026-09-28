@@ -220,10 +220,17 @@ std::string_view toString(SpirvDescriptorKind kind) {
 }
 
 Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32_t> &words,
-                                                   bool isVertex) {
+                                                   SpirvReflectStage stage) {
   if (words.size() < 5 || words[0] != kSpvMagic) {
     return Error::make(ErrorCode::CompilationFailed, "SPIR-V reflect: bad magic / too short");
   }
+  const bool isVertex = stage == SpirvReflectStage::Vertex;
+  const bool isFragment = stage == SpirvReflectStage::Fragment;
+  const bool isGeometry = stage == SpirvReflectStage::Geometry;
+  const bool isTessControl = stage == SpirvReflectStage::TessControl;
+  const bool isTessEval = stage == SpirvReflectStage::TessEvaluation;
+  const bool isMesh = stage == SpirvReflectStage::Mesh;
+  const bool isTask = stage == SpirvReflectStage::Task;
 
   SpirvModuleReflection out;
   std::unordered_map<std::uint32_t, TypeInfo> types;
@@ -252,15 +259,15 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeVoid:
       if (wc >= 2)
-        types[op[1]] = TypeInfo{TypeKind::Void};
+        types[op[1]] = TypeInfo{TypeKind::Void, 0, true, 0, 0, 0, 0, 0, {}};
       break;
     case OpTypeBool:
       if (wc >= 2)
-        types[op[1]] = TypeInfo{TypeKind::Bool, 32};
+        types[op[1]] = TypeInfo{TypeKind::Bool, 32, true, 0, 0, 0, 0, 0, {}};
       break;
     case OpTypeInt:
       if (wc >= 4) {
-        TypeInfo t{TypeKind::Int};
+        TypeInfo t{TypeKind::Int, 0, true, 0, 0, 0, 0, 0, {}};
         t.width = op[2];
         t.isSigned = op[3] != 0;
         types[op[1]] = t;
@@ -268,14 +275,14 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeFloat:
       if (wc >= 3) {
-        TypeInfo t{TypeKind::Float};
+        TypeInfo t{TypeKind::Float, 0, true, 0, 0, 0, 0, 0, {}};
         t.width = op[2];
         types[op[1]] = t;
       }
       break;
     case OpTypeVector:
       if (wc >= 4) {
-        TypeInfo t{TypeKind::Vector};
+        TypeInfo t{TypeKind::Vector, 0, true, 0, 0, 0, 0, 0, {}};
         t.elemType = op[2];
         t.elemCount = op[3];
         types[op[1]] = t;
@@ -283,7 +290,7 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeMatrix:
       if (wc >= 4) {
-        TypeInfo t{TypeKind::Matrix};
+        TypeInfo t{TypeKind::Matrix, 0, true, 0, 0, 0, 0, 0, {}};
         t.elemType = op[2];
         t.elemCount = op[3];
         types[op[1]] = t;
@@ -291,7 +298,7 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeImage:
       if (wc >= 2) {
-        TypeInfo ti{TypeKind::Image};
+        TypeInfo ti{TypeKind::Image, 0, true, 0, 0, 0, 0, 0, {}};
         if (wc >= 4)
           ti.imageDim = op[3];
         if (wc >= 8)
@@ -303,15 +310,15 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeSampler:
       if (wc >= 2)
-        types[op[1]] = TypeInfo{TypeKind::Sampler};
+        types[op[1]] = TypeInfo{TypeKind::Sampler, 0, true, 0, 0, 0, 0, 0, {}};
       break;
     case OpTypeSampledImage:
       if (wc >= 2)
-        types[op[1]] = TypeInfo{TypeKind::SampledImage};
+        types[op[1]] = TypeInfo{TypeKind::SampledImage, 0, true, 0, 0, 0, 0, 0, {}};
       break;
     case OpTypeArray:
       if (wc >= 4) {
-        TypeInfo t{TypeKind::Array};
+        TypeInfo t{TypeKind::Array, 0, true, 0, 0, 0, 0, 0, {}};
         t.elemType = op[2];
         auto cit = constInt.find(op[3]);
         t.elemCount = cit != constInt.end() ? cit->second : 1;
@@ -320,14 +327,14 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypeRuntimeArray:
       if (wc >= 3) {
-        TypeInfo t{TypeKind::RuntimeArray};
+        TypeInfo t{TypeKind::RuntimeArray, 0, true, 0, 0, 0, 0, 0, {}};
         t.elemType = op[2];
         types[op[1]] = t;
       }
       break;
     case OpTypeStruct:
       if (wc >= 2) {
-        TypeInfo t{TypeKind::Struct};
+        TypeInfo t{TypeKind::Struct, 0, true, 0, 0, 0, 0, 0, {}};
         for (std::uint16_t k = 2; k < wc; ++k)
           t.members.push_back(op[k]);
         types[op[1]] = t;
@@ -335,7 +342,7 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
       break;
     case OpTypePointer:
       if (wc >= 4) {
-        TypeInfo t{TypeKind::Pointer};
+        TypeInfo t{TypeKind::Pointer, 0, true, 0, 0, 0, 0, 0, {}};
         t.storageClass = op[2];
         t.elemType = op[3];
         types[op[1]] = t;
@@ -424,7 +431,12 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
           if (pc.size == 0)
             pc.size = 128;
           pc.fromVertex = isVertex;
-          pc.fromFragment = !isVertex;
+          pc.fromFragment = isFragment;
+          pc.fromGeometry = isGeometry;
+          pc.fromTessControl = isTessControl;
+          pc.fromTessEvaluation = isTessEval;
+          pc.fromMesh = isMesh;
+          pc.fromTask = isTask;
           out.pushConstants.push_back(pc);
         }
 
@@ -459,7 +471,12 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
               b.sizeBytes = 256;
           }
           b.fromVertex = isVertex;
-          b.fromFragment = !isVertex;
+          b.fromFragment = isFragment;
+          b.fromGeometry = isGeometry;
+          b.fromTessControl = isTessControl;
+          b.fromTessEvaluation = isTessEval;
+          b.fromMesh = isMesh;
+          b.fromTask = isTask;
           out.descriptors.push_back(b);
         }
       }
@@ -478,47 +495,149 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
 }
 
 SpirvModuleReflection mergeSpirvReflections(const SpirvModuleReflection &vert,
-                                            const SpirvModuleReflection &frag) {
+                                            const SpirvModuleReflection &frag,
+                                            const SpirvExtraStageReflections &extra) {
   SpirvModuleReflection out;
+  auto orFlags = [](SpirvModuleReflection &o, const SpirvModuleReflection &m) {
+    o.usesClipDistance = o.usesClipDistance || m.usesClipDistance;
+    o.usesInputAttachment = o.usesInputAttachment || m.usesInputAttachment;
+    o.usesRuntimeDescriptorArray = o.usesRuntimeDescriptorArray || m.usesRuntimeDescriptorArray;
+    o.usesShaderClock = o.usesShaderClock || m.usesShaderClock;
+  };
   out.usesClipDistance = vert.usesClipDistance || frag.usesClipDistance;
   out.usesInputAttachment = vert.usesInputAttachment || frag.usesInputAttachment;
   out.usesRuntimeDescriptorArray =
       vert.usesRuntimeDescriptorArray || frag.usesRuntimeDescriptorArray;
+  out.usesShaderClock = vert.usesShaderClock || frag.usesShaderClock;
+  if (extra.geometry)
+    orFlags(out, *extra.geometry);
+  if (extra.tessControl)
+    orFlags(out, *extra.tessControl);
+  if (extra.tessEvaluation)
+    orFlags(out, *extra.tessEvaluation);
+  if (extra.mesh)
+    orFlags(out, *extra.mesh);
+  if (extra.task)
+    orFlags(out, *extra.task);
+
   out.vertexInputs = vert.vertexInputs;
   out.pushConstants = vert.pushConstants;
-  for (const auto &pc : frag.pushConstants) {
-    bool merged = false;
+
+  struct StageMark {
+    bool frag = false;
+    bool geom = false;
+    bool tesc = false;
+    bool tese = false;
+    bool mesh = false;
+    bool task = false;
+  };
+  auto applyPcMark = [](SpirvPushConstantRange &e, StageMark m) {
+    if (m.frag)
+      e.fromFragment = true;
+    if (m.geom)
+      e.fromGeometry = true;
+    if (m.tesc)
+      e.fromTessControl = true;
+    if (m.tese)
+      e.fromTessEvaluation = true;
+    if (m.mesh)
+      e.fromMesh = true;
+    if (m.task)
+      e.fromTask = true;
+  };
+  auto mergePc = [&](const SpirvPushConstantRange &pc, StageMark m) {
     for (auto &e : out.pushConstants) {
       if (e.offset == pc.offset) {
         e.size = std::max(e.size, pc.size);
-        e.fromFragment = true;
-        merged = true;
-        break;
+        applyPcMark(e, m);
+        return;
       }
     }
-    if (!merged)
-      out.pushConstants.push_back(pc);
+    SpirvPushConstantRange n = pc;
+    applyPcMark(n, m);
+    out.pushConstants.push_back(n);
+  };
+  for (const auto &pc : frag.pushConstants)
+    mergePc(pc, StageMark{true, false, false, false, false, false});
+  if (extra.geometry) {
+    for (const auto &pc : extra.geometry->pushConstants)
+      mergePc(pc, StageMark{false, true, false, false, false, false});
+  }
+  if (extra.tessControl) {
+    for (const auto &pc : extra.tessControl->pushConstants)
+      mergePc(pc, StageMark{false, false, true, false, false, false});
+  }
+  if (extra.tessEvaluation) {
+    for (const auto &pc : extra.tessEvaluation->pushConstants)
+      mergePc(pc, StageMark{false, false, false, true, false, false});
+  }
+  if (extra.mesh) {
+    for (const auto &pc : extra.mesh->pushConstants)
+      mergePc(pc, StageMark{false, false, false, false, true, false});
+  }
+  if (extra.task) {
+    for (const auto &pc : extra.task->pushConstants)
+      mergePc(pc, StageMark{false, false, false, false, false, true});
   }
 
   auto key = [](const SpirvDescriptorBinding &b) {
     return (static_cast<std::uint64_t>(b.set) << 32) | b.binding;
   };
   std::unordered_map<std::uint64_t, SpirvDescriptorBinding> map;
-  for (const auto &b : vert.descriptors) {
+  for (const auto &b : vert.descriptors)
     map[key(b)] = b;
-  }
-  for (const auto &b : frag.descriptors) {
+
+  auto applyDescMark = [](SpirvDescriptorBinding &e, StageMark m) {
+    if (m.frag)
+      e.fromFragment = true;
+    if (m.geom)
+      e.fromGeometry = true;
+    if (m.tesc)
+      e.fromTessControl = true;
+    if (m.tese)
+      e.fromTessEvaluation = true;
+    if (m.mesh)
+      e.fromMesh = true;
+    if (m.task)
+      e.fromTask = true;
+  };
+  auto mergeDesc = [&](const SpirvDescriptorBinding &b, StageMark m) {
     auto it = map.find(key(b));
     if (it == map.end()) {
-      map[key(b)] = b;
+      SpirvDescriptorBinding n = b;
+      applyDescMark(n, m);
+      map[key(b)] = n;
     } else {
-      it->second.fromFragment = true;
+      applyDescMark(it->second, m);
       it->second.sizeBytes = std::max(it->second.sizeBytes, b.sizeBytes);
       it->second.count = std::max(it->second.count, b.count);
       if (it->second.kind == SpirvDescriptorKind::Unknown)
         it->second.kind = b.kind;
     }
+  };
+  for (const auto &b : frag.descriptors)
+    mergeDesc(b, StageMark{true, false, false, false, false, false});
+  if (extra.geometry) {
+    for (const auto &b : extra.geometry->descriptors)
+      mergeDesc(b, StageMark{false, true, false, false, false, false});
   }
+  if (extra.tessControl) {
+    for (const auto &b : extra.tessControl->descriptors)
+      mergeDesc(b, StageMark{false, false, true, false, false, false});
+  }
+  if (extra.tessEvaluation) {
+    for (const auto &b : extra.tessEvaluation->descriptors)
+      mergeDesc(b, StageMark{false, false, false, true, false, false});
+  }
+  if (extra.mesh) {
+    for (const auto &b : extra.mesh->descriptors)
+      mergeDesc(b, StageMark{false, false, false, false, true, false});
+  }
+  if (extra.task) {
+    for (const auto &b : extra.task->descriptors)
+      mergeDesc(b, StageMark{false, false, false, false, false, true});
+  }
+
   out.descriptors.reserve(map.size());
   for (auto &kv : map)
     out.descriptors.push_back(kv.second);
@@ -530,5 +649,6 @@ SpirvModuleReflection mergeSpirvReflections(const SpirvModuleReflection &vert,
             });
   return out;
 }
+
 
 } // namespace csrun

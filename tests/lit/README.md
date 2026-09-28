@@ -9,6 +9,18 @@ llvm-lit style regression suite for `csrun`.
 ./tools/csrun-lit --filter 'compile/corpus/texture'
 ```
 
+
+## Breadth-first (do this before deep feature work)
+
+1. Run execute breadth across all Vulkan sample folders:
+   ```bash
+   . scripts/env-mesa-main-radv.sh
+   ./tools/csrun-breadth
+   ```
+2. Read `BREADTH.md` — pick the **largest fail bucket**, not a random sample.
+3. Only then open/fix a milestone issue and implement that capability.
+4. Re-run breadth to confirm the bucket shrinks.
+
 ## Layout
 
 ```text

@@ -1,8 +1,10 @@
 #include "csrun/backends/vulkan/VulkanBackend.h"
 
 #include "csrun/backends/vulkan/VulkanDevicePick.h"
+#include "csrun/backends/vulkan/VulkanHandle.h"
 #include "csrun/backends/vulkan/VulkanPerfQuery.h"
 #include "csrun/backends/vulkan/VulkanPipelineQueries.h"
+#include "csrun/backends/vulkan/VulkanRayTracingSmoke.h"
 #include "csrun/backends/vulkan/VulkanSpirvRunner.h"
 #include "csrun/benchmark/Statistics.h"
 #include "csrun/benchmark/PipelineStats.h"
@@ -141,6 +143,22 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
       smoke.vertexSpv = compiled.value().spvPath;
     else if (compiled.value().stage == ShaderStage::Fragment)
       smoke.fragmentSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::Geometry)
+      smoke.geometrySpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::TessControl)
+      smoke.tessControlSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::TessEvaluation)
+      smoke.tessEvalSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::Mesh)
+      smoke.meshSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::Task)
+      smoke.taskSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::RayGen)
+      smoke.raygenSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::ClosestHit)
+      smoke.closestHitSpv = compiled.value().spvPath;
+    else if (compiled.value().stage == ShaderStage::Miss)
+      smoke.missSpv = compiled.value().spvPath;
     else {
       Error e = Error::make(ErrorCode::UnsupportedOperation,
                             std::string("Vulkan execute does not support shader stage '") +
@@ -150,6 +168,54 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
       e.operation = "execute";
       return e;
     }
+  }
+
+  // Ray-tracing workloads use a dedicated smoke path (AS + SBT + traceRays).
+  if (!smoke.raygenSpv.empty()) {
+    if (smoke.closestHitSpv.empty() || smoke.missSpv.empty()) {
+      Error e = Error::make(ErrorCode::InvalidWorkload,
+                            "ray tracing execute needs raygen + closesthit + miss SPIR-V");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    VulkanRayTracingRequest rt;
+    rt.raygenSpv = smoke.raygenSpv;
+    rt.closestHitSpv = smoke.closestHitSpv;
+    rt.missSpv = smoke.missSpv;
+    rt.deviceIndex = smoke.deviceIndex;
+    rt.width = smoke.width;
+    rt.height = smoke.height;
+    rt.warmup = smoke.warmup;
+    rt.iterations = smoke.iterations;
+    auto traced = vulkanRayTracingSmoke(rt);
+    if (!traced)
+      return traced.error();
+
+    for (const auto &step : traced.value().steps)
+      note << "  * " << step << '\n';
+
+    RunResult result;
+    result.workloadName = workload.name;
+    result.operation = workload.operation;
+    result.backend = BackendType::Vulkan;
+    result.deviceName = traced.value().deviceName.empty() ? device.name : traced.value().deviceName;
+    result.deviceVendor = device.vendor;
+    result.driver = device.driver;
+    result.compilerName = "glslangValidator+spirv-val";
+    result.warmup = rt.warmup;
+    result.iterations = rt.iterations;
+    if (!traced.value().samplesMs.empty())
+      result.timing =
+          Statistics::compute(traced.value().samplesMs, traced.value().timingSource);
+    else
+      result.timing.source = TimingSource::CpuWall;
+    result.validation =
+        traced.value().ok ? ValidationStatus::Passed : ValidationStatus::Failed;
+    result.note = note.str() + "mode=" + traced.value().mode +
+                  (traced.value().ok ? " PASS (vkCmdTraceRaysKHR + pixel readback)\n"
+                                     : " FAIL (ray tracing output is black)\n");
+    return result;
   }
 
   auto loaded = vulkanSmokeSpirv(smoke);
@@ -216,9 +282,14 @@ uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryProper
   return std::numeric_limits<uint32_t>::max();
 }
 
+/// A buffer and the device memory bound to it.
+///
+/// Members are declared so that reverse declaration order destroys the buffer
+/// before its memory, which is what Vulkan requires. The owning deleters capture
+/// the `VkDevice`, so no manual `destroyBuffer` call is needed on any exit path.
 struct BufferResource {
-  VkBuffer buffer = VK_NULL_HANDLE;
-  VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceMemoryHandle memory;
+  VkBufferHandle buffer;
   VkDeviceSize size = 0;
 };
 
@@ -230,36 +301,29 @@ Expected<BufferResource> createBuffer(VkDevice device, VkPhysicalDevice phys, Vk
   bi.size = size;
   bi.usage = usage;
   bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VkResult r = vkCreateBuffer(device, &bi, nullptr, &out.buffer);
+  VkBuffer rawBuffer = VK_NULL_HANDLE;
+  VkResult r = vkCreateBuffer(device, &bi, nullptr, &rawBuffer);
   if (r != VK_SUCCESS)
     return vkError(ErrorCode::ResourceAllocationFailed, "vkCreateBuffer failed", r);
+  out.buffer = VkBufferHandle{rawBuffer, {device, vkDestroyBuffer}};
 
   VkMemoryRequirements req{};
-  vkGetBufferMemoryRequirements(device, out.buffer, &req);
+  vkGetBufferMemoryRequirements(device, rawBuffer, &req);
   const uint32_t typeIndex = findMemoryType(phys, req.memoryTypeBits, memProps);
-  if (typeIndex == std::numeric_limits<uint32_t>::max()) {
-    vkDestroyBuffer(device, out.buffer, nullptr);
+  if (typeIndex == std::numeric_limits<uint32_t>::max())
     return Error::make(ErrorCode::ResourceAllocationFailed, "no suitable memory type");
-  }
 
   VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   ai.allocationSize = req.size;
   ai.memoryTypeIndex = typeIndex;
-  r = vkAllocateMemory(device, &ai, nullptr, &out.memory);
-  if (r != VK_SUCCESS) {
-    vkDestroyBuffer(device, out.buffer, nullptr);
+  VkDeviceMemory rawMemory = VK_NULL_HANDLE;
+  r = vkAllocateMemory(device, &ai, nullptr, &rawMemory);
+  if (r != VK_SUCCESS)
     return vkError(ErrorCode::ResourceAllocationFailed, "vkAllocateMemory failed", r);
-  }
-  vkBindBufferMemory(device, out.buffer, out.memory, 0);
-  return out;
-}
+  out.memory = VkDeviceMemoryHandle{rawMemory, {device, vkFreeMemory}};
 
-void destroyBuffer(VkDevice device, BufferResource &b) {
-  if (b.buffer)
-    vkDestroyBuffer(device, b.buffer, nullptr);
-  if (b.memory)
-    vkFreeMemory(device, b.memory, nullptr);
-  b = {};
+  vkBindBufferMemory(device, rawBuffer, rawMemory, 0);
+  return out;
 }
 
 } // namespace
@@ -295,11 +359,11 @@ Expected<std::vector<DeviceInfo>> VulkanBackend::enumerateDevices() const {
   VkResult r = vkCreateInstance(&ci, nullptr, &instance);
   if (r != VK_SUCCESS)
     return vkError(ErrorCode::DriverError, "vkCreateInstance failed", r);
+  VkInstanceHandle instanceGuard{instance};
 
   uint32_t count = 0;
   r = vkEnumeratePhysicalDevices(instance, &count, nullptr);
   if (r != VK_SUCCESS || count == 0) {
-    vkDestroyInstance(instance, nullptr);
     if (r != VK_SUCCESS)
       return vkError(ErrorCode::DriverError, "vkEnumeratePhysicalDevices failed", r);
     return Error::make(ErrorCode::DeviceNotFound, "no Vulkan physical devices");
@@ -329,7 +393,6 @@ Expected<std::vector<DeviceInfo>> VulkanBackend::enumerateDevices() const {
     scored.push_back(std::move(s));
   }
 
-  vkDestroyInstance(instance, nullptr);
   if (scored.empty())
     return Error::make(ErrorCode::DeviceNotFound, "no Vulkan compute-capable devices");
 
@@ -388,22 +451,21 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   VkResult r = vkCreateInstance(&ici, nullptr, &instance);
   if (r != VK_SUCCESS)
     return vkError(ErrorCode::DriverError, "vkCreateInstance failed", r);
+  // Owns `instance` for the rest of the function. Declared first among the guards below
+  // so it is destroyed last; every early return after this point is leak-free.
+  VkInstanceHandle instanceGuard{instance};
 
   uint32_t physCount = 0;
   vkEnumeratePhysicalDevices(instance, &physCount, nullptr);
   std::vector<VkPhysicalDevice> phys(physCount);
   vkEnumeratePhysicalDevices(instance, &physCount, phys.data());
-  if (physCount == 0) {
-    vkDestroyInstance(instance, nullptr);
+  if (physCount == 0)
     return Error::make(ErrorCode::DeviceNotFound, "no Vulkan physical devices");
-  }
   const uint32_t physIndex = vulkanPickPhysicalDevice(
       phys, options.deviceIndex ? options.deviceIndex : std::optional<std::uint32_t>{device.index},
       false);
-  if (physIndex >= physCount) {
-    vkDestroyInstance(instance, nullptr);
+  if (physIndex >= physCount)
     return Error::make(ErrorCode::DeviceNotFound, "device index out of range");
-  }
   VkPhysicalDevice physical = phys[physIndex];
   const VulkanDeviceMeta meta = vulkanQueryDeviceMeta(physical, physIndex);
 
@@ -418,10 +480,8 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
       break;
     }
   }
-  if (computeFamily == std::numeric_limits<uint32_t>::max()) {
-    vkDestroyInstance(instance, nullptr);
+  if (computeFamily == std::numeric_limits<uint32_t>::max())
     return Error::make(ErrorCode::DeviceNotFound, "no compute queue family");
-  }
 
   float priority = 1.0f;
   VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -461,10 +521,10 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   }
   VkDevice vkDevice = VK_NULL_HANDLE;
   r = vkCreateDevice(physical, &dci, nullptr, &vkDevice);
-  if (r != VK_SUCCESS) {
-    vkDestroyInstance(instance, nullptr);
+  if (r != VK_SUCCESS)
     return vkError(ErrorCode::DriverError, "vkCreateDevice failed", r);
-  }
+  // Declared after instanceGuard so it is destroyed before the instance.
+  VkDeviceHandle deviceGuard{vkDevice};
 
   VkQueue queue = VK_NULL_HANDLE;
   vkGetDeviceQueue(vkDevice, computeFamily, 0, &queue);
@@ -483,17 +543,8 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   auto bufC = createBuffer(vkDevice, physical, bytes,
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (!bufA || !bufB || !bufC) {
-    if (bufA)
-      destroyBuffer(vkDevice, bufA.value());
-    if (bufB)
-      destroyBuffer(vkDevice, bufB.value());
-    if (bufC)
-      destroyBuffer(vkDevice, bufC.value());
-    vkDestroyDevice(vkDevice, nullptr);
-    vkDestroyInstance(instance, nullptr);
+  if (!bufA || !bufB || !bufC)
     return bufA ? (bufB ? bufC.error() : bufB.error()) : bufA.error();
-  }
 
   VectorAddHost host = makeVectorAddHost(n);
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
@@ -503,12 +554,12 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   {
     const auto t0 = std::chrono::steady_clock::now();
     void *mapped = nullptr;
-    vkMapMemory(vkDevice, bufA.value().memory, 0, bytes, 0, &mapped);
+    vkMapMemory(vkDevice, bufA.value().memory.get(), 0, bytes, 0, &mapped);
     std::memcpy(mapped, host.a.data(), static_cast<size_t>(bytes));
-    vkUnmapMemory(vkDevice, bufA.value().memory);
-    vkMapMemory(vkDevice, bufB.value().memory, 0, bytes, 0, &mapped);
+    vkUnmapMemory(vkDevice, bufA.value().memory.get());
+    vkMapMemory(vkDevice, bufB.value().memory.get(), 0, bytes, 0, &mapped);
     std::memcpy(mapped, host.b.data(), static_cast<size_t>(bytes));
-    vkUnmapMemory(vkDevice, bufB.value().memory);
+    vkUnmapMemory(vkDevice, bufB.value().memory.get());
     const auto t1 = std::chrono::steady_clock::now();
     h2dMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
   }
@@ -518,14 +569,9 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   smci.pCode = spirv.value().data();
   VkShaderModule shader = VK_NULL_HANDLE;
   r = vkCreateShaderModule(vkDevice, &smci, nullptr, &shader);
-  if (r != VK_SUCCESS) {
-    destroyBuffer(vkDevice, bufA.value());
-    destroyBuffer(vkDevice, bufB.value());
-    destroyBuffer(vkDevice, bufC.value());
-    vkDestroyDevice(vkDevice, nullptr);
-    vkDestroyInstance(instance, nullptr);
+  if (r != VK_SUCCESS)
     return vkError(ErrorCode::CompilationFailed, "vkCreateShaderModule failed", r);
-  }
+  VkShaderModuleHandle shaderGuard{shader, {vkDevice, vkDestroyShaderModule}};
 
   VkDescriptorSetLayoutBinding bindings[3]{};
   for (uint32_t i = 0; i < 3; ++i) {
@@ -539,6 +585,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   dslci.pBindings = bindings;
   VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
   vkCreateDescriptorSetLayout(vkDevice, &dslci, nullptr, &setLayout);
+  VkDescriptorSetLayoutHandle setLayoutGuard{setLayout, {vkDevice, vkDestroyDescriptorSetLayout}};
 
   VkPushConstantRange pushRange{};
   pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -552,6 +599,8 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   plci.pPushConstantRanges = &pushRange;
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   vkCreatePipelineLayout(vkDevice, &plci, nullptr, &pipelineLayout);
+  VkPipelineLayoutHandle pipelineLayoutGuard{pipelineLayout,
+                                            {vkDevice, vkDestroyPipelineLayout}};
 
   VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
   cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -561,17 +610,9 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   cpci.layout = pipelineLayout;
   VkPipeline pipeline = VK_NULL_HANDLE;
   r = vkCreateComputePipelines(vkDevice, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline);
-  if (r != VK_SUCCESS) {
-    vkDestroyPipelineLayout(vkDevice, pipelineLayout, nullptr);
-    vkDestroyDescriptorSetLayout(vkDevice, setLayout, nullptr);
-    vkDestroyShaderModule(vkDevice, shader, nullptr);
-    destroyBuffer(vkDevice, bufA.value());
-    destroyBuffer(vkDevice, bufB.value());
-    destroyBuffer(vkDevice, bufC.value());
-    vkDestroyDevice(vkDevice, nullptr);
-    vkDestroyInstance(instance, nullptr);
+  if (r != VK_SUCCESS)
     return vkError(ErrorCode::CompilationFailed, "vkCreateComputePipelines failed", r);
-  }
+  VkPipelineHandle pipelineGuard{pipeline, {vkDevice, vkDestroyPipeline}};
 
   VkDescriptorPoolSize poolSize{};
   poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -582,6 +623,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   dpci.pPoolSizes = &poolSize;
   VkDescriptorPool pool = VK_NULL_HANDLE;
   vkCreateDescriptorPool(vkDevice, &dpci, nullptr, &pool);
+  VkDescriptorPoolHandle poolGuard{pool, {vkDevice, vkDestroyDescriptorPool}};
 
   VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   dsai.descriptorPool = pool;
@@ -594,7 +636,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   BufferResource *bufs[3] = {&bufA.value(), &bufB.value(), &bufC.value()};
   VkWriteDescriptorSet writes[3]{};
   for (uint32_t i = 0; i < 3; ++i) {
-    bis[i].buffer = bufs[i]->buffer;
+    bis[i].buffer = bufs[i]->buffer.get();
     bis[i].offset = 0;
     bis[i].range = bytes;
     writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -611,6 +653,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   VkCommandPool cmdPool = VK_NULL_HANDLE;
   vkCreateCommandPool(vkDevice, &cpInfo, nullptr, &cmdPool);
+  VkCommandPoolHandle cmdPoolGuard{cmdPool, {vkDevice, vkDestroyCommandPool}};
 
   VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   cbai.commandPool = cmdPool;
@@ -628,6 +671,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     qpci.queryCount = PipelineStats::kComputeTimestampCount;
     vkCreateQueryPool(vkDevice, &qpci, nullptr, &queryPool);
   }
+  VkQueryPoolHandle queryPoolGuard{queryPool, {vkDevice, vkDestroyQueryPool}};
 
   PipelineStats pipeCounters;
   std::vector<PipelineStats> counterSamples;
@@ -640,6 +684,7 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     if (vkCreateQueryPool(vkDevice, &spci, nullptr, &statsPool) != VK_SUCCESS)
       statsPool = VK_NULL_HANDLE;
   }
+  VkQueryPoolHandle statsPoolGuard{statsPool, {vkDevice, vkDestroyQueryPool}};
 
   std::vector<std::string> perfSteps;
   VulkanPerfQuerySession perf =
@@ -648,13 +693,13 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   if (!perf.available)
     perf.note = vulkanPerfQueryHint(meta);
 
-  auto destroyPerfAndQueries = [&]() {
-    vulkanDestroyPerfQuerySession(vkDevice, perf);
-    if (statsPool)
-      vkDestroyQueryPool(vkDevice, statsPool, nullptr);
-    if (queryPool)
-      vkDestroyQueryPool(vkDevice, queryPool, nullptr);
-  };
+  // Released on scope exit; the ordering below guarantees the perf session and both query
+  // pools are torn down before the device, so no exit path needs an explicit cleanup call.
+  struct PerfSessionGuard {
+    VkDevice device;
+    VulkanPerfQuerySession session;
+    ~PerfSessionGuard() { vulkanDestroyPerfQuerySession(device, session); }
+  } perfGuard{vkDevice, perf};
 
   auto recordAndSubmit = [&](bool withTimestamps, bool withStats) -> Expected<double> {
     PipelineStats iterCounters;
@@ -780,22 +825,8 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   // Warmup
   for (int i = 0; i < warmupIters; ++i) {
     auto w = recordAndSubmit(false, false);
-    if (!w) {
-      // cleanup below via early path — fall through to cleanup helpers
-      destroyPerfAndQueries();
-      vkDestroyCommandPool(vkDevice, cmdPool, nullptr);
-      vkDestroyDescriptorPool(vkDevice, pool, nullptr);
-      vkDestroyPipeline(vkDevice, pipeline, nullptr);
-      vkDestroyPipelineLayout(vkDevice, pipelineLayout, nullptr);
-      vkDestroyDescriptorSetLayout(vkDevice, setLayout, nullptr);
-      vkDestroyShaderModule(vkDevice, shader, nullptr);
-      destroyBuffer(vkDevice, bufA.value());
-      destroyBuffer(vkDevice, bufB.value());
-      destroyBuffer(vkDevice, bufC.value());
-      vkDestroyDevice(vkDevice, nullptr);
-      vkDestroyInstance(instance, nullptr);
+    if (!w)
       return w.error();
-    }
   }
 
   std::vector<double> samples;
@@ -805,41 +836,14 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     const bool last = (i + 1 == timedIters);
     if (timestampsSupported) {
       auto ms = recordAndSubmit(true, true);
-      if (!ms) {
-        // cleanup
-        destroyPerfAndQueries();
-        vkDestroyCommandPool(vkDevice, cmdPool, nullptr);
-        vkDestroyDescriptorPool(vkDevice, pool, nullptr);
-        vkDestroyPipeline(vkDevice, pipeline, nullptr);
-        vkDestroyPipelineLayout(vkDevice, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(vkDevice, setLayout, nullptr);
-        vkDestroyShaderModule(vkDevice, shader, nullptr);
-        destroyBuffer(vkDevice, bufA.value());
-        destroyBuffer(vkDevice, bufB.value());
-        destroyBuffer(vkDevice, bufC.value());
-        vkDestroyDevice(vkDevice, nullptr);
-        vkDestroyInstance(instance, nullptr);
+      if (!ms)
         return ms.error();
-      }
       samples.push_back(ms.value());
       timingSource = TimingSource::GpuTimestamp;
     } else {
       auto ms = recordAndSubmit(false, true);
-      if (!ms) {
-        destroyPerfAndQueries();
-        vkDestroyCommandPool(vkDevice, cmdPool, nullptr);
-        vkDestroyDescriptorPool(vkDevice, pool, nullptr);
-        vkDestroyPipeline(vkDevice, pipeline, nullptr);
-        vkDestroyPipelineLayout(vkDevice, pipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(vkDevice, setLayout, nullptr);
-        vkDestroyShaderModule(vkDevice, shader, nullptr);
-        destroyBuffer(vkDevice, bufA.value());
-        destroyBuffer(vkDevice, bufB.value());
-        destroyBuffer(vkDevice, bufC.value());
-        vkDestroyDevice(vkDevice, nullptr);
-        vkDestroyInstance(instance, nullptr);
+      if (!ms)
         return ms.error();
-      }
       samples.push_back(ms.value());
       timingSource = TimingSource::CpuWall;
     }
@@ -854,9 +858,9 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   {
     const auto t0 = std::chrono::steady_clock::now();
     void *mapped = nullptr;
-    vkMapMemory(vkDevice, bufC.value().memory, 0, bytes, 0, &mapped);
+    vkMapMemory(vkDevice, bufC.value().memory.get(), 0, bytes, 0, &mapped);
     std::memcpy(host.output.data(), mapped, static_cast<size_t>(bytes));
-    vkUnmapMemory(vkDevice, bufC.value().memory);
+    vkUnmapMemory(vkDevice, bufC.value().memory.get());
     const auto t1 = std::chrono::steady_clock::now();
     pipeCounters.hostD2hMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
   }
@@ -872,19 +876,6 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     result.note = (result.note.empty() ? "" : result.note + "\n") +
                   (nl == std::string::npos ? report : report.substr(0, nl));
   }
-
-  destroyPerfAndQueries();
-  vkDestroyCommandPool(vkDevice, cmdPool, nullptr);
-  vkDestroyDescriptorPool(vkDevice, pool, nullptr);
-  vkDestroyPipeline(vkDevice, pipeline, nullptr);
-  vkDestroyPipelineLayout(vkDevice, pipelineLayout, nullptr);
-  vkDestroyDescriptorSetLayout(vkDevice, setLayout, nullptr);
-  vkDestroyShaderModule(vkDevice, shader, nullptr);
-  destroyBuffer(vkDevice, bufA.value());
-  destroyBuffer(vkDevice, bufB.value());
-  destroyBuffer(vkDevice, bufC.value());
-  vkDestroyDevice(vkDevice, nullptr);
-  vkDestroyInstance(instance, nullptr);
 
   if (result.validation == ValidationStatus::Failed)
     logError("validation", result.note);

@@ -26,6 +26,14 @@ struct VulkanSmokeRequest {
   std::filesystem::path computeSpv;
   std::filesystem::path vertexSpv;
   std::filesystem::path fragmentSpv;
+  std::filesystem::path geometrySpv; // optional
+  std::filesystem::path tessControlSpv; // optional
+  std::filesystem::path tessEvalSpv; // optional
+  std::filesystem::path meshSpv; // optional (replaces vertex)
+  std::filesystem::path taskSpv; // optional (with mesh)
+  std::filesystem::path raygenSpv; // optional RT
+  std::filesystem::path closestHitSpv; // optional RT
+  std::filesystem::path missSpv; // optional RT
   /// nullopt = auto-pick (prefer perf_query / RADV); set to force a physical index.
   std::optional<std::uint32_t> deviceIndex;
   /// When true (graphics): real Vulkan WSI present (Xlib surface + swapchain).

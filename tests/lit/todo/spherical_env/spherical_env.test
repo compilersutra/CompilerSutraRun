@@ -2,4 +2,7 @@
 # When implemented: move to execute/corpus/spherical_env/ and remove XFAIL.
 # REQUIRES: vulkan, gpu, corpus, glslang
 # XFAIL: *
-# RUN: %csrun %repo/tests/lit/Inputs/todo/spherical_env.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark
+# The smoke path auto-fills sampler descriptors with a white 4x4 texture instead of a
+# real environment map, so the shader draws without ever sampling one. Assert the real
+# capability so the test cannot pass on the placeholder descriptor fill.
+# RUN: %csrun %repo/tests/lit/Inputs/todo/spherical_env.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark | grep -qi "env map"

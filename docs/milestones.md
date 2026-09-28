@@ -183,7 +183,7 @@ GLSL (.glsl compute)
 
 ---
 
-## M12 — Vulkan workload coverage *(planned)*
+## M12 — Vulkan workload coverage *(active)*
 
 Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond the in-tree examples.
 
@@ -193,8 +193,26 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 | Compile vs execute coverage | Clear report of what builds vs what runs on GPU |
 | Layout / feature growth | Multi-set descriptors done; more patterns via `tests/lit/todo/` |
 | Regression gate | In-tree Vulkan examples keep PASS |
+| Evidence-based render check | `checkFrame` proves visible output, not just "did not crash" |
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
+
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **74 PASS / 21 FAIL / 0 SKIP**
+of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
+
+| Gap | Samples | Root cause |
+|-----|---------|-----------|
+| `FAIL_BLACK` | 6 | Shaders read data the runner does not supply (e.g. MRT gbuffers in `deferred`, `ssao` need >1 colour attachment) |
+| RGB nondeterminism | 2 | `ssao`, `terraintessellation` disagree between two identical draws — under investigation |
+| `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
+| `FAIL_INPUT_ATTACH` | 3 | subpass input attachments |
+| Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
+| glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+Determinism is judged on RGB only. A shader that assigns just `.rgb` leaves the alpha
+output component undefined per SPIR-V, and RADV fills it with register garbage — two
+identical draws differed on 14–18% of texels in alpha alone, which says nothing about the
+draw. See `FrameCheckConfig::compareMask`.
 
 Tracking: [milestone/13](https://github.com/compilersutra/CompilerSutraRun/milestone/13) · [issue #2](https://github.com/compilersutra/CompilerSutraRun/issues/2)
 
@@ -260,11 +278,13 @@ Prompt **Phase 8**. Only after native backends are real.
 
 ```text
 Done     Vulkan (SPIR-V) + .comp/.vert/.frag → .spv smoke
+Done     OpenCL (ICD) + HIP (hiprtc) — vector_add
+Done     OpenGL (EGL headless, GL 4.3 compute) — vector_add
 Active   Vulkan SPIR-V depth (counters / timing)
-Planned  M12 Vulkan workload coverage
+Active   M12 Vulkan workload coverage
 Next     CUDA (PTX) → --all
-Then     D3D12 (DXIL) → Metal → HIP → OpenCL
-Then     OpenGL + OpenGL ES (pre-Vulkan Linux / mobile)
+Then     D3D12 (DXIL) → Metal
+Then     OpenGL ES (pre-Vulkan Linux / mobile)
 Then     WebGPU → CPU
 Later    MLIR/LLVM orchestration
 Always   integrate mature toolchains; never fake backends

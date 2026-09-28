@@ -1,5 +1,5 @@
-# Needs ray-tracing pipeline stages (raygen / closesthit / miss).
-name: todo_raytracing
+# Ray-tracing pipeline smoke (raygen / closesthit / miss).
+name: corpus_raytracing
 operation: spirv
 backend: vulkan
 shaders:

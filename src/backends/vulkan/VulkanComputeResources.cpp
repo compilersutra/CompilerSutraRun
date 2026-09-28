@@ -125,7 +125,7 @@ Expected<void> vulkanRunComputeGeneric(VkPhysicalDevice physical, VkDevice devic
   const uint32_t extentW = req.width > 0 ? req.width : 64;
   const uint32_t extentH = req.height > 0 ? req.height : 64;
 
-  auto reflOr = reflectSpirvModule(words, false);
+  auto reflOr = reflectSpirvModule(words, SpirvReflectStage::Fragment);
   if (!reflOr)
     return reflOr.error();
   const SpirvModuleReflection &refl = reflOr.value();

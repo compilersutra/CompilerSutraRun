@@ -1,11 +1,13 @@
 # Needs geometry-shader stage in the graphics pipeline.
-name: todo_geometry
+# Pairing matches SaschaWillems geometryshader normals pipeline:
+#   base.vert + normaldebug.geom + base.frag
+name: corpus_geometry
 operation: spirv
 backend: vulkan
 shaders:
-  - external/shader-corpus/Vulkan/shaders/glsl/geometryshader/mesh.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/geometryshader/base.vert
   - external/shader-corpus/Vulkan/shaders/glsl/geometryshader/normaldebug.geom
-  - external/shader-corpus/Vulkan/shaders/glsl/geometryshader/mesh.frag
+  - external/shader-corpus/Vulkan/shaders/glsl/geometryshader/base.frag
 execution:
   show: false
   width: 64
