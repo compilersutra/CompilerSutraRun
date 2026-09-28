@@ -1454,6 +1454,77 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       }
     }
 
+    // Indirect draw command buffer: the smoke path always uses vkCmdDrawIndirect with a
+    // pre-filled VkDrawIndirectCommand so the indirect draw path is exercised.
+    VkBuffer indirectBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory indirectMem = VK_NULL_HANDLE;
+    if (!useMeshPipeline) {
+      VkDrawIndirectCommand drawCmd{};
+      drawCmd.vertexCount = resources.hasVertexAttrs ? resources.vertexCount : 3;
+      drawCmd.instanceCount = 1;
+      drawCmd.firstVertex = 0;
+      drawCmd.firstInstance = 0;
+      VkBufferCreateInfo indCi{};
+      indCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      indCi.size = sizeof(VkDrawIndirectCommand);
+      indCi.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+      indCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      r = vkCreateBuffer(device, &indCi, nullptr, &indirectBuffer);
+      if (r != VK_SUCCESS) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateBuffer (indirect) failed", r);
+      }
+      VkMemoryRequirements indReq{};
+      vkGetBufferMemoryRequirements(device, indirectBuffer, &indReq);
+      const uint32_t indMemType = findMemoryType(
+          physical, indReq.memoryTypeBits,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      if (indMemType == std::numeric_limits<uint32_t>::max()) {
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::ResourceAllocationFailed,
+                           "no host-visible memory for indirect buffer");
+      }
+      VkMemoryAllocateInfo indAi{};
+      indAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      indAi.allocationSize = indReq.size;
+      indAi.memoryTypeIndex = indMemType;
+      r = vkAllocateMemory(device, &indAi, nullptr, &indirectMem);
+      if (r != VK_SUCCESS) {
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkAllocateMemory (indirect) failed", r);
+      }
+      vkBindBufferMemory(device, indirectBuffer, indirectMem, 0);
+      void *indMapped = nullptr;
+      r = vkMapMemory(device, indirectMem, 0, sizeof(VkDrawIndirectCommand), 0, &indMapped);
+      if (r != VK_SUCCESS) {
+        vkFreeMemory(device, indirectMem, nullptr);
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkMapMemory (indirect) failed", r);
+      }
+      std::memcpy(indMapped, &drawCmd, sizeof(drawCmd));
+      vkUnmapMemory(device, indirectMem);
+      steps.push_back("vkCmdDrawIndirect (smoke)");
+    }
+
     // Offscreen targets: the primed subpass inputs first, then the real colour target at
     // `outputAttachment` -- that one is the only image read back.
     std::vector<VkImage> targetImages(attachmentCount, VK_NULL_HANDLE);
@@ -1810,6 +1881,8 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, queryPool, 1);
         if (useMeshPipeline) {
           cmdDrawMeshTasksEXT(cmd, 1, 1, 1);
+        } else if (indirectBuffer) {
+          vkCmdDrawIndirect(cmd, indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
         } else {
           vkCmdDraw(cmd, resources.hasVertexAttrs ? resources.vertexCount : 3, 1, 0, 0);
         }
@@ -1940,6 +2013,10 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       if (queryPool)
         vkDestroyQueryPool(device, queryPool, nullptr);
       vkDestroyCommandPool(device, cmdPool, nullptr);
+      if (indirectMem)
+        vkFreeMemory(device, indirectMem, nullptr);
+      if (indirectBuffer)
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
       vkFreeMemory(device, stagingMem, nullptr);
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);

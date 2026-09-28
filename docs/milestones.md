@@ -197,7 +197,7 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **82 PASS / 13 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **83 PASS / 12 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
@@ -223,6 +223,11 @@ pointers in push constants (`GL_EXT_buffer_reference`), the graphics device enab
 `bufferDeviceAddress`, and the smoke pass creates a device buffer filled with an identity
 matrix and pushes its real device address into the push-constant block. The `cube` sample
 passes with `OCCLUSION=1352` and `frame check: coverage 33.008%, 252 distinct colours, stable`.
+
+`indirect_draw` is now supported: the smoke path always uses `vkCmdDrawIndirect` with a
+pre-filled `VkDrawIndirectCommand` buffer, so the indirect draw path is exercised for every
+graphics workload. The `indirectdraw` sample passes with `OCCLUSION=340` and
+`frame check: coverage 8.301%, 1 distinct colours, stable`.
 
 `subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
 and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,
