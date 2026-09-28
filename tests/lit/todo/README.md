@@ -73,4 +73,4 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | `depth_stencil` | toon/outline smoke draws color without a depth attachment |
 | multi-pass | still single-subpass; the `subpassInput` path adds a second subpass, and `pbrbasic`/`deferred` still want a scene |
 | ~~MRT~~ | **closed** — `SpirvReflect::colorOutputCount` sizes the render pass, blend state, clears, and readback, and every target is frame-checked individually. `deferred_mrt` was a false green: it passed with locations 1 and 2 unbound |
-| ray-tracing validation | the RT path only checks "any pixel non-black" — no coverage, distinct-colour, or determinism check like the graphics path uses. A single stray pixel passes it |
+| ~~ray-tracing validation~~ | **closed** — the RT path now runs the same `checkFrame` bar as graphics (coverage, distinct colours, determinism) instead of "any pixel non-black". A single stray texel no longer passes |

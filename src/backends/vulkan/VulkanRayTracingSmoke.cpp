@@ -9,6 +9,7 @@
 #include "csrun/backends/vulkan/VulkanDevicePick.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
+#include "csrun/validation/FrameCheck.h"
 
 #include <vulkan/vulkan.h>
 
@@ -887,9 +888,13 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
 
   const int warmup = std::max(0, req.warmup);
   const int iterations = std::max(1, req.iterations);
-  for (int iteration = -warmup; iteration < iterations; ++iteration) {
+
+  // One trace + readback-copy, reused for the timing loop and the determinism re-run.
+  // Returns void: the caller already holds the result object, so errors propagate as a
+  // failed result from the enclosing function instead.
+  auto traceOnce = [&]() -> Expected<void> {
     if (auto begun = beginCommand(); !begun)
-      return fail(begun.error());
+      return begun.error();
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipelineLayout,
                             0, 1, &descriptorSet, 0, nullptr);
@@ -923,9 +928,15 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0,
                          nullptr, 1, &backToGeneral);
-    const auto start = std::chrono::steady_clock::now();
     if (auto submitted = submitCommand(); !submitted)
-      return fail(submitted.error());
+      return submitted.error();
+    return {};
+  };
+
+  for (int iteration = -warmup; iteration < iterations; ++iteration) {
+    const auto start = std::chrono::steady_clock::now();
+    if (auto traced = traceOnce(); !traced)
+      return fail(traced.error());
     const auto end = std::chrono::steady_clock::now();
     if (iteration >= 0)
       out.samplesMs.push_back(
@@ -949,22 +960,52 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
   out.centerB = pixels[centerOffset + 2];
   out.centerA = pixels[centerOffset + 3];
   out.pixelChecked = true;
-  out.ok = (out.centerR | out.centerG | out.centerB) != 0;
-  if (!out.ok) {
-    for (size_t offset = 0; offset + 3 < static_cast<size_t>(stagingBytes); offset += 4) {
-      if ((pixels[offset] | pixels[offset + 1] | pixels[offset + 2]) != 0) {
-        out.ok = true;
-        steps.push_back("non-black ray tracing pixel found off-center");
-        break;
-      }
-    }
-  }
+  const size_t frameBytes = static_cast<size_t>(stagingBytes);
+  const std::vector<std::uint8_t> frame1(pixels, pixels + frameBytes);
   vkUnmapMemory(device, staging.memory);
+  pixelsMapped = nullptr;
+
+  // Second readback of the same draw, to catch nondeterminism. A ray-traced frame that
+  // differs between two identical traces is not evidence the pipeline ran correctly.
+  std::vector<std::uint8_t> frame2;
+  if (auto traced = traceOnce(); !traced) {
+    return fail(traced.error());
+  }
+  r = vkMapMemory(device, staging.memory, 0, stagingBytes, 0, &pixelsMapped);
+  if (r == VK_SUCCESS && pixelsMapped) {
+    const auto *p2 = static_cast<const uint8_t *>(pixelsMapped);
+    frame2.assign(p2, p2 + frameBytes);
+    vkUnmapMemory(device, staging.memory);
+    pixelsMapped = nullptr;
+  }
+  if (frame2.empty())
+    steps.push_back("warning: second ray tracing readback unavailable; determinism skipped");
+
   steps.push_back("readback center pixel rgba=(" + std::to_string(out.centerR) + "," +
                   std::to_string(out.centerG) + "," + std::to_string(out.centerB) + "," +
                   std::to_string(out.centerA) + ")");
-  if (!out.ok)
-    steps.push_back("FAIL: ray tracing output is black");
+
+  // Same evidence bar as the graphics path: coverage, colour variety, and determinism.
+  // "Any pixel non-black" let a single stray texel pass as a successful trace.
+  FrameCheckConfig cfg;
+  if (!frame2.empty()) {
+    const FrameDiff diff =
+        diffFrames(frame1.data(), frame2.data(), frameBytes, width, height, cfg);
+    if (diff.hasDifference)
+      steps.push_back("determinism: " + std::to_string(diff.differingTexels) +
+                      " differing texels (" +
+                      std::to_string(static_cast<int>(diff.percentDiffering + 0.5)) +
+                      "%), max channel delta " + std::to_string(diff.maxChannelDelta) +
+                      ", first at (" + std::to_string(diff.firstX) + "," +
+                      std::to_string(diff.firstY) + ")");
+  }
+  const FrameCheckResult check = checkFrame(
+      frame1.data(), frame1.size(), width, height, cfg,
+      frame2.empty() ? nullptr : frame2.data(), frame2.empty() ? 0 : frameBytes);
+  out.ok = check.ok;
+  steps.push_back("frame check: " + check.reason);
+  if (!check.ok)
+    steps.push_back("FAIL: ray tracing output failed evidence checks (coverage/colours/determinism)");
 
   cleanup();
   logInfo("runtime", "Vulkan ray tracing smoke " + std::string(out.ok ? "OK" : "FAIL") +
