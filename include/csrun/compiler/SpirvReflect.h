@@ -94,6 +94,10 @@ struct SpirvPushConstantRange {
   bool fromTessEvaluation = false;
   bool fromMesh = false;
   bool fromTask = false;
+  /// True if this push-constant block contains PhysicalStorageBuffer pointers
+  /// (GL_EXT_buffer_reference). The smoke pass must fill these with real device
+  /// addresses, not identity/white data.
+  bool hasBufferReference = false;
 };
 
 struct SpirvModuleReflection {
@@ -106,6 +110,10 @@ struct SpirvModuleReflection {
   bool usesInputAttachment = false;
   /// True if any descriptor uses OpTypeRuntimeArray (needs indexing features).
   bool usesRuntimeDescriptorArray = false;
+  /// True if any push-constant block contains PhysicalStorageBuffer pointers
+  /// (GL_EXT_buffer_reference). The smoke pass must fill these with real device
+  /// addresses pointing at buffer data.
+  bool usesBufferDeviceAddress = false;
   /// Number of colour attachments a pipeline for this module must provide: the highest
   /// `Location` on a fragment-stage output variable, plus one. Builtin outputs such as
   /// `gl_FragDepth` are excluded, so a plain single-target shader reports 1. Zero means the

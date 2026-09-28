@@ -364,8 +364,52 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
     if (res.pushStages == 0)
       res.pushStages = VK_SHADER_STAGE_ALL_GRAPHICS;
     res.pushBytes.assign(maxSize, 0);
-    fillSmokePushConstants(res.pushBytes);
-    steps.push_back("auto push constants: " + std::to_string(maxSize) + " bytes (smoke defaults)");
+    bool hasBDA = false;
+    for (const auto &pc : refl.pushConstants)
+      if (pc.hasBufferReference)
+        hasBDA = true;
+    if (hasBDA) {
+      VkBufferCreateInfo bci{};
+      bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bci.size = 64;
+      bci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+      bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      VkBuffer bdaBuf = VK_NULL_HANDLE;
+      VkDeviceMemory bdaMem = VK_NULL_HANDLE;
+      void *bdaMapped = nullptr;
+      Expected<void> ebda = createHostBuffer(physical, device, 64,
+                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                            &bdaBuf, &bdaMem, &bdaMapped);
+      if (ebda.hasValue()) {
+        fillIdentityUbo(bdaMapped, 64);
+        VkBufferDeviceAddressInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        dai.buffer = bdaBuf;
+        VkDeviceAddress addr = vkGetBufferDeviceAddress(device, &dai);
+        if (addr != 0) {
+          std::memcpy(res.pushBytes.data(), &addr, sizeof(addr));
+          if (res.pushBytes.size() >= 16)
+            std::memcpy(res.pushBytes.data() + 8, &addr, sizeof(addr));
+          res.bdaBuffers.push_back(bdaBuf);
+          res.bdaMemories.push_back(bdaMem);
+          steps.push_back("auto push constants: " + std::to_string(maxSize) +
+                          " bytes (BDA device addresses)");
+        } else {
+          vkFreeMemory(device, bdaMem, nullptr);
+          vkDestroyBuffer(device, bdaBuf, nullptr);
+          fillSmokePushConstants(res.pushBytes);
+          steps.push_back("auto push constants: " + std::to_string(maxSize) +
+                          " bytes (smoke defaults)");
+        }
+      } else {
+        fillSmokePushConstants(res.pushBytes);
+        steps.push_back("auto push constants: " + std::to_string(maxSize) +
+                        " bytes (smoke defaults)");
+      }
+    } else {
+      fillSmokePushConstants(res.pushBytes);
+      steps.push_back("auto push constants: " + std::to_string(maxSize) + " bytes (smoke defaults)");
+    }
   }
 
   // --- subpass inputs ---
@@ -744,6 +788,10 @@ void vulkanDestroyGraphicsResources(VkDevice device, VulkanGraphicsResources &re
   for (auto m : res.ssboMemories)
     vkFreeMemory(device, m, nullptr);
   for (auto b : res.ssboBuffers)
+    vkDestroyBuffer(device, b, nullptr);
+  for (auto m : res.bdaMemories)
+    vkFreeMemory(device, m, nullptr);
+  for (auto b : res.bdaBuffers)
     vkDestroyBuffer(device, b, nullptr);
   if (res.vertexMemory)
     vkFreeMemory(device, res.vertexMemory, nullptr);

@@ -57,6 +57,7 @@ constexpr std::uint32_t SCOutput = 3;
 constexpr std::uint32_t SCUniform = 2;
 constexpr std::uint32_t SCPushConstant = 9;
 constexpr std::uint32_t SCStorageBuffer = 12;
+constexpr std::uint32_t SCPhysicalStorageBuffer = 5349; // GL_EXT_buffer_reference
 
 // Capabilities
 constexpr std::uint32_t CapClipDistance = 32;
@@ -259,6 +260,28 @@ TypeInfo unwrapPointer(const std::unordered_map<std::uint32_t, TypeInfo> &types,
   if (it->second.kind == TypeKind::Pointer)
     return unwrapPointer(types, it->second.elemType);
   return it->second;
+}
+
+/// True if `typeId` is (or contains) a PhysicalStorageBuffer pointer.
+bool containsBufferReference(const std::unordered_map<std::uint32_t, TypeInfo> &types,
+                             std::uint32_t typeId, int depth = 0) {
+  if (depth > 32)
+    return false;
+  auto it = types.find(typeId);
+  if (it == types.end())
+    return false;
+  const TypeInfo &t = it->second;
+  if (t.kind == TypeKind::Pointer)
+    return t.storageClass == SCPhysicalStorageBuffer ||
+           containsBufferReference(types, t.elemType, depth + 1);
+  if (t.kind == TypeKind::Struct) {
+    for (std::uint32_t m : t.members)
+      if (containsBufferReference(types, m, depth + 1))
+        return true;
+  }
+  if (t.kind == TypeKind::Array || t.kind == TypeKind::RuntimeArray)
+    return containsBufferReference(types, t.elemType, depth + 1);
+  return false;
 }
 
 SpirvDescriptorKind classifyDescriptor(const TypeInfo &pointee, const Decor &d,
@@ -537,6 +560,10 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
           pc.fromTessEvaluation = isTessEval;
           pc.fromMesh = isMesh;
           pc.fromTask = isTask;
+          if (containsBufferReference(types, ptr.elemType)) {
+            pc.hasBufferReference = true;
+            out.usesBufferDeviceAddress = true;
+          }
           out.pushConstants.push_back(pc);
         }
 

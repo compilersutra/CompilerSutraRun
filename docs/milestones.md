@@ -197,20 +197,26 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **78 PASS / 17 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **79 PASS / 16 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
 |-----|---------|-----------|
-| `FAIL_BLACK` | 7 | Scene data, not missing capability. Each is one output location with 0–3 sampled images; the smoke pass binds a shared white texture and primes UBOs from the reflected layout, which is not enough to light a scene. `deferred` is the clearest case: `ambient` is `0.0` in the shader and the light UBO is zeroed, so `atten = radius/(dist²+1) = 0` and the frame is `(0,0,0,255)` **by arithmetic** — the run log shows `OCCLUSION=4096` and `FS/PS=4096`, so the draw ran and the shader wrote. `pbrbasic`, `offscreen`, `displacement`, `bufferdeviceaddress`, `ssao`, `terraintessellation` are the same shape |
+| `FAIL_BLACK` | 6 | Scene data, not missing capability. Each is one output location with 0–3 sampled images; the smoke pass binds a shared white texture and primes UBOs from the reflected layout, which is not enough to light a scene. `deferred` is the clearest case: `ambient` is `0.0` in the shader and the light UBO is zeroed, so `atten = radius/(dist²+1) = 0` and the frame is `(0,0,0,255)` **by arithmetic** — the run log shows `OCCLUSION=4096` and `FS/PS=4096`, so the draw ran and the shader wrote. `pbrbasic`, `offscreen`, `displacement`, `ssao`, `terraintessellation` are the same shape |
 | `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
 | Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
 | `FAIL_COMPUTE_RES` | 1 | compute resource binding gap |
 | glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
 
 A blank frame is only a coverage bug when the workload could have produced colour. These
-seven are not evidence of a runner defect, and inventing light positions to turn them green
+six are not evidence of a runner defect, and inventing light positions to turn them green
 would be fabricating the result, so they stay FAIL with the data requirement stated.
+
+`buffer_device_address` is now supported: `SpirvReflect` detects `PhysicalStorageBuffer`
+pointers in push constants (`GL_EXT_buffer_reference`), the graphics device enables
+`bufferDeviceAddress`, and the smoke pass creates a device buffer filled with an identity
+matrix and pushes its real device address into the push-constant block. The `cube` sample
+passes with `OCCLUSION=1352` and `frame check: coverage 33.008%, 252 distinct colours, stable`.
 
 `subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
 and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,

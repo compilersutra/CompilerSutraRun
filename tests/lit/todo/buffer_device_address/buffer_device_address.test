@@ -1,7 +1,0 @@
-# TODO feature: buffer_device_address
-# When implemented: move this test (+ Inputs/todo/buffer_device_address.yaml) to
-#   tests/lit/execute/corpus/buffer_device_address/
-# and remove XFAIL.
-# REQUIRES: vulkan, gpu, corpus, glslang
-# XFAIL: *
-# RUN: %csrun %repo/tests/lit/Inputs/todo/buffer_device_address.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

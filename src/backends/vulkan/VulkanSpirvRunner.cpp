@@ -297,6 +297,19 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     enabledIndexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
   }
 
+  // Probe buffer-device-address feature (GL_EXT_buffer_reference).
+  VkPhysicalDeviceBufferDeviceAddressFeatures enabledBDAFeatures{};
+  enabledBDAFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  {
+    VkPhysicalDeviceFeatures2 bdaProbe{};
+    bdaProbe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    bdaProbe.pNext = &enabledBDAFeatures;
+    vkGetPhysicalDeviceFeatures2(physical, &bdaProbe);
+  }
+  const bool wantBDA = enabledBDAFeatures.bufferDeviceAddress == VK_TRUE;
+  if (wantBDA)
+    enabledBDAFeatures.bufferDeviceAddress = VK_TRUE;
+
   VkPhysicalDevicePerformanceQueryFeaturesKHR enabledPerfFeatures = perfSetup.features;
   VkPhysicalDeviceFeatures2 features2{};
   features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -308,7 +321,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   dci.ppEnabledExtensionNames = deviceExts.empty() ? nullptr : deviceExts.data();
-  // Chain: features2 → [mesh] → [indexing] → [perf]
+  // Chain: features2 → [bda] → [mesh] → [indexing] → [perf]
   void *chain = nullptr;
   if (perfSetup.want) {
     enabledPerfFeatures.pNext = chain;
@@ -322,7 +335,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     enabledMeshFeatures.pNext = chain;
     chain = &enabledMeshFeatures;
   }
-  if (chain || perfSetup.want || wantIndexing || wantMesh) {
+  if (wantBDA) {
+    enabledBDAFeatures.pNext = chain;
+    chain = &enabledBDAFeatures;
+  }
+  if (chain || perfSetup.want || wantIndexing || wantMesh || wantBDA) {
     features2.pNext = chain;
     dci.pNext = &features2;
     dci.pEnabledFeatures = nullptr;

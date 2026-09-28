@@ -48,6 +48,10 @@ struct VulkanGraphicsResources {
   std::vector<std::uint8_t> pushBytes;
   VkShaderStageFlags pushStages = 0;
 
+  /// BDA buffers backing PhysicalStorageBuffer pointers in push constants.
+  std::vector<VkBuffer> bdaBuffers;
+  std::vector<VkDeviceMemory> bdaMemories;
+
   /// `subpassInput` bindings. Their views are render pass attachments, which the caller
   /// creates after this struct exists, so the descriptor writes are deferred to
   /// `vulkanWriteInputAttachmentDescriptors`.
