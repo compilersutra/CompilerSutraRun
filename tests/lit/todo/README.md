@@ -70,4 +70,5 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | Gap | Notes |
 |-----|-------|
 | `depth_stencil` | toon/outline smoke draws color without a depth attachment |
-| multi-pass / MRT | single color target only (the subpass path adds an extra target, but only for `subpassInput`) |
+| multi-pass | still single-subpass; the `subpassInput` path adds a second subpass, and `pbrbasic`/`deferred` still want a scene |
+| ~~MRT~~ | **closed** — `SpirvReflect::colorOutputCount` sizes the render pass, blend state, clears, and readback, and every target is frame-checked individually. `deferred_mrt` was a false green: it passed with locations 1 and 2 unbound |

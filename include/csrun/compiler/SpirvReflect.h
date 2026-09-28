@@ -106,6 +106,13 @@ struct SpirvModuleReflection {
   bool usesInputAttachment = false;
   /// True if any descriptor uses OpTypeRuntimeArray (needs indexing features).
   bool usesRuntimeDescriptorArray = false;
+  /// Number of colour attachments a pipeline for this module must provide: the highest
+  /// `Location` on a fragment-stage output variable, plus one. Builtin outputs such as
+  /// `gl_FragDepth` are excluded, so a plain single-target shader reports 1. Zero means the
+  /// module declares no user colour output at all. A module writing several locations
+  /// (MRT) is not safe to run against a one-attachment pipeline: the extra writes are
+  /// undefined in Vulkan, so callers size the render pass from this.
+  std::uint32_t colorOutputCount = 0;
 };
 
 struct SpirvExtraStageReflections {

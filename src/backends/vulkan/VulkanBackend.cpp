@@ -255,7 +255,13 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
                    std::to_string(loaded.value().framesPresented) + ")\n";
   } else if (loaded.value().pixelChecked) {
     result.validation = ValidationStatus::Passed;
-    result.note += "mode=" + loaded.value().mode + " PASS (vkCmdDraw + pixel readback)\n";
+    // Say how many targets were actually read back: an MRT shader that only checks its
+    // first target would otherwise be indistinguishable from a single-target one.
+    result.note += "mode=" + loaded.value().mode + " PASS (vkCmdDraw + pixel readback";
+    result.note += loaded.value().colorTargetsChecked > 1
+                       ? " x" + std::to_string(loaded.value().colorTargetsChecked)
+                       : "";
+    result.note += ")\n";
   } else if (loaded.value().computeChecked) {
     result.validation = ValidationStatus::Passed;
     result.note += "mode=" + loaded.value().mode + " PASS (compute + host check)\n";

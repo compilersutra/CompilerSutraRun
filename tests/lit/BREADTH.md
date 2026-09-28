@@ -7,7 +7,7 @@ One representative workload **per sample folder**. **Scan breadth-first**, then 
 ./tools/csrun-breadth
 ```
 
-Last run: **PASS=78 FAIL=17 SKIP=0** (137.1s)
+Last run: **PASS=78 FAIL=17 SKIP=0** (135.8s)
 
 ## Buckets (priority = fail count)
 

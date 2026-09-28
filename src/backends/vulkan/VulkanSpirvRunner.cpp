@@ -70,6 +70,11 @@ uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryProper
 /// the smoke path rather than silently dropped.
 constexpr uint32_t kMaxInputAttachments = 8;
 
+/// Upper bound on colour attachments. Matches `MAX_COLOR_ATTACHMENTS` on every known
+/// implementation, so a shader declaring more outputs is rejected loudly instead of being
+/// run with the extra locations left undefined.
+constexpr uint32_t kMaxColorOutputs = 8;
+
 /// How many attachments the smoke render pass primes for `subpassInput` reads: one per
 /// declared InputAttachmentIndex, so a shader reading index 2 gets a real attachment 2.
 uint32_t inputAttachmentCount(const std::vector<SpirvDescriptorBinding> &binds) {
@@ -1189,12 +1194,26 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
     // `subpassInput` reads a render pass attachment, and an attachment cannot be written
     // and read as an input in the same subpass. So a shader with subpass inputs gets
-    // `inputCount` primed attachments plus one extra attachment for the real output:
-    // subpass 0 only clears the inputs, subpass 1 renders with the pipeline. Shaders
-    // without subpass inputs keep the single-attachment, single-subpass path.
+    // `inputCount` primed attachments plus its own outputs: subpass 0 only clears the
+    // inputs, subpass 1 renders with the pipeline. Shaders without subpass inputs keep the
+    // single-attachment, single-subpass path.
+    //
+    // `outputCount` comes from the fragment shader's declared `Location`s. A shader writing
+    // several locations needs one attachment each: the render pass and the blend state must
+    // cover every location, because a fragment write to a location the pipeline does not
+    // bind as a colour attachment is undefined, not merely dropped.
     const uint32_t inputCount = inputAttachmentCount(resources.inputAttachments);
+    const uint32_t outputCount = resources.reflection.colorOutputCount == 0
+                                     ? 1u
+                                     : resources.reflection.colorOutputCount;
+    if (outputCount > kMaxColorOutputs) {
+      return Error::make(ErrorCode::UnsupportedOperation,
+                         "fragment shader declares " + std::to_string(outputCount) +
+                             " colour outputs; this smoke pass supports at most " +
+                             std::to_string(kMaxColorOutputs));
+    }
     const uint32_t outputAttachment = inputCount;
-    const uint32_t attachmentCount = inputCount + 1;
+    const uint32_t attachmentCount = inputCount + outputCount;
     const uint32_t subpassIndex = inputCount > 0 ? 1u : 0u;
     if (inputCount > 0) {
       // Print the priming values: the frame the check sees is a function of these, so the
@@ -1206,7 +1225,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         primed += std::to_string(inputAttachmentPrimeValue(i, inputCount));
       }
       steps.push_back("subpass inputs: " + std::to_string(inputCount) +
-                      " primed attachment(s) [grey=" + primed + "] + 1 output attachment");
+                      " primed attachment(s) [grey=" + primed + "] + " +
+                      std::to_string(outputCount) + " output attachment(s)");
+    } else if (outputCount > 1) {
+      steps.push_back("MRT: " + std::to_string(outputCount) +
+                      " colour targets from fragment output locations");
     }
 
     std::vector<VkAttachmentDescription> attachments(attachmentCount);
@@ -1229,14 +1252,18 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       inputRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = outputAttachment;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // One reference per declared output location, so an MRT shader binds every location it
+    // writes instead of leaving the extras undefined.
+    std::vector<VkAttachmentReference> outputRefs(outputCount);
+    for (uint32_t i = 0; i < outputCount; ++i) {
+      outputRefs[i].attachment = outputAttachment + i;
+      outputRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     std::vector<VkSubpassDescription> subpasses(inputCount > 0 ? 2 : 1);
     subpasses[subpassIndex].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpasses[subpassIndex].colorAttachmentCount = 1;
-    subpasses[subpassIndex].pColorAttachments = &colorRef;
+    subpasses[subpassIndex].colorAttachmentCount = outputCount;
+    subpasses[subpassIndex].pColorAttachments = outputRefs.data();
     if (inputCount > 0) {
       // Priming subpass: colour attachments only so vkCmdBeginRenderPass clears them.
       // No pipeline is created for it and the command buffer draws nothing in it.
@@ -1356,14 +1383,18 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineColorBlendAttachmentState blendAtt{};
-    blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    // A vector, not a single state: the count has to match the subpass colour attachment
+    // count or the pipeline and render pass disagree about how many targets exist.
+    std::vector<VkPipelineColorBlendAttachmentState> blendAtts(outputCount);
+    for (VkPipelineColorBlendAttachmentState &b : blendAtts) {
+      b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    }
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments = &blendAtt;
+    cb.attachmentCount = outputCount;
+    cb.pAttachments = blendAtts.data();
 
     VkGraphicsPipelineCreateInfo gpci{};
     gpci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1548,8 +1579,10 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     }
     steps.push_back("vkCreateFramebuffer");
 
-    // Staging buffer for pixel readback
-    const VkDeviceSize stagingBytes = static_cast<VkDeviceSize>(extentW) * extentH * 4;
+    // Staging buffer for pixel readback. One contiguous region per colour target, so every
+    // declared output location gets read back instead of just the first.
+    const VkDeviceSize imageBytes = static_cast<VkDeviceSize>(extentW) * extentH * 4;
+    const VkDeviceSize stagingBytes = imageBytes * outputCount;
     VkBufferCreateInfo bufCi{};
     bufCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufCi.size = stagingBytes;
@@ -1728,29 +1761,28 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         if (withPerf)
           vulkanPerfCmdBegin(cmd, perf);
 
-        VkClearValue clear{};
-        clear.color.float32[3] = 1.0f;
-        // One clear per attachment: the subpass inputs get the priming ramp, the output
-        // keeps the usual opaque black. The vectors stay alive across the render pass call.
-        std::vector<VkClearValue> clears;
-        if (inputCount > 0) {
-          clears.resize(attachmentCount);
-          for (uint32_t i = 0; i < inputCount; ++i) {
-            const float v = inputAttachmentPrimeValue(i, inputCount);
-            clears[i].color.float32[0] = v;
-            clears[i].color.float32[1] = v;
-            clears[i].color.float32[2] = v;
-            clears[i].color.float32[3] = 1.0f;
-          }
-          clears[outputAttachment].color.float32[3] = 1.0f;
+        // One clear per attachment: the subpass inputs get the priming ramp, the colour
+        // outputs keep the usual opaque black. `clearValueCount` has to cover every
+        // attachment the render pass declares, so build the vector unconditionally -- with
+        // MRT there is more than one even when there are no subpass inputs.
+        std::vector<VkClearValue> clears(attachmentCount);
+        for (uint32_t i = 0; i < inputCount; ++i) {
+          const float v = inputAttachmentPrimeValue(i, inputCount);
+          clears[i].color.float32[0] = v;
+          clears[i].color.float32[1] = v;
+          clears[i].color.float32[2] = v;
+          clears[i].color.float32[3] = 1.0f;
         }
+        for (uint32_t i = inputCount; i < attachmentCount; ++i)
+          clears[i].color.float32[3] = 1.0f;
+
         VkRenderPassBeginInfo rpBegin{};
         rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rpBegin.renderPass = renderPass;
         rpBegin.framebuffer = framebuffer;
         rpBegin.renderArea.extent = {extentW, extentH};
-        rpBegin.clearValueCount = clears.empty() ? 1u : static_cast<uint32_t>(clears.size());
-        rpBegin.pClearValues = clears.empty() ? &clear : clears.data();
+        rpBegin.clearValueCount = static_cast<uint32_t>(clears.size());
+        rpBegin.pClearValues = clears.data();
 
         vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
         if (inputCount > 0)
@@ -1778,12 +1810,15 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
           vkCmdEndQuery(cmd, statsPool, 0);
 
         if (lastPass && withReadback) {
-          VkBufferImageCopy copy{};
-          copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-          copy.imageSubresource.layerCount = 1;
-          copy.imageExtent = {extentW, extentH, 1};
-          vkCmdCopyImageToBuffer(cmd, targetImages[outputAttachment],
-                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
+          for (uint32_t t = 0; t < outputCount; ++t) {
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = imageBytes * t;
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = {extentW, extentH, 1};
+            vkCmdCopyImageToBuffer(cmd, targetImages[outputAttachment + t],
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
+          }
         }
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 4);
@@ -1940,11 +1975,15 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     r = vkMapMemory(device, stagingMem, 0, stagingBytes, 0, &mapped);
     if (r == VK_SUCCESS && mapped) {
       const auto *px = static_cast<const std::uint8_t *>(mapped);
+      const size_t targetBytes = static_cast<size_t>(imageBytes);
       const size_t frameBytes = static_cast<size_t>(stagingBytes);
       const std::vector<std::uint8_t> frame1(px, px + frameBytes);
       vkUnmapMemory(device, stagingMem);
       mapped = nullptr;
 
+      // Target 0 fills the single-target result fields; every target is checked, so an MRT
+      // shader only passes when all of its declared output locations were really written.
+      out.colorTargetsChecked = outputCount;
       std::uint8_t center[4] = {0, 0, 0, 0};
       frameCenterPixel(frame1.data(), extentW, extentH, center);
       out.centerR = center[0];
@@ -1980,32 +2019,62 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         cfg.minCoveragePercent = 0.0;
         cfg.minDistinctColors = 1;
       }
-      if (!frame2.empty()) {
-        // compareMask is RGB-only by default: shaders that assign just `.rgb` leave the
-        // alpha output component undefined, and drivers fill it with register garbage,
-        // so alpha divergence between two identical draws proves nothing. RGB still
-        // catches real divergence -- ssao and terraintessellation fail this way.
-        const FrameDiff diff =
-            diffFrames(frame1.data(), frame2.data(), frameBytes, extentW, extentH, cfg);
-        if (diff.hasDifference)
-          steps.push_back("determinism: " + std::to_string(diff.differingTexels) +
-                          " differing texels (" + std::to_string(static_cast<int>(
-                              diff.percentDiffering + 0.5)) +
-                          "%), max channel delta " + std::to_string(diff.maxChannelDelta) +
-                          ", first at (" + std::to_string(diff.firstX) + "," +
-                          std::to_string(diff.firstY) + ")");
+
+      const auto targetName = [&](uint32_t t) -> std::string {
+        if (outputCount <= 1)
+          return {};
+        return " target " + std::to_string(t);
+      };
+
+      // Every colour target gets its own determinism diff and frame check; `out.ok` is the
+      // conjunction, so a shader whose second target stayed black fails the run.
+      bool allOk = true;
+      for (uint32_t t = 0; t < outputCount; ++t) {
+        const std::uint8_t *t1 = frame1.data() + targetBytes * t;
+        const std::uint8_t *t2 =
+            frame2.empty() ? nullptr : frame2.data() + targetBytes * t;
+
+        if (t > 0) {
+          std::uint8_t c[4] = {0, 0, 0, 0};
+          frameCenterPixel(t1, extentW, extentH, c);
+          steps.push_back("readback" + targetName(t) + " center pixel rgba=(" +
+                          std::to_string(c[0]) + "," + std::to_string(c[1]) + "," +
+                          std::to_string(c[2]) + "," + std::to_string(c[3]) + ")");
+        }
+
+        if (t2) {
+          // compareMask is RGB-only by default: shaders that assign just `.rgb` leave the
+          // alpha output component undefined, and drivers fill it with register garbage,
+          // so alpha divergence between two identical draws proves nothing. RGB still
+          // catches real divergence -- ssao and terraintessellation fail this way.
+          const FrameDiff diff = diffFrames(t1, t2, targetBytes, extentW, extentH, cfg);
+          if (diff.hasDifference)
+            steps.push_back("determinism" + targetName(t) + ": " +
+                            std::to_string(diff.differingTexels) + " differing texels (" +
+                            std::to_string(static_cast<int>(diff.percentDiffering + 0.5)) +
+                            "%), max channel delta " + std::to_string(diff.maxChannelDelta) +
+                            ", first at (" + std::to_string(diff.firstX) + "," +
+                            std::to_string(diff.firstY) + ")");
+        }
+
+        const FrameCheckResult check =
+            checkFrame(t1, targetBytes, extentW, extentH, cfg, t2, frame2.empty() ? 0
+                                                                                   : targetBytes);
+        allOk = allOk && check.ok;
+        steps.push_back("frame check" + targetName(t) + ": " + check.reason);
+        if (!check.ok) {
+          steps.push_back("FAIL: colour target " + std::to_string(t) + " of " +
+                          std::to_string(outputCount) +
+                          " failed evidence checks (coverage/colours/determinism)");
+        }
       }
-      const FrameCheckResult check = checkFrame(
-          frame1.data(), frame1.size(), extentW, extentH, cfg, frame2.empty() ? nullptr : frame2.data(),
-          frame2.size());
-      out.ok = check.ok;
-      steps.push_back("frame check: " + check.reason);
-      if (!check.ok) {
+      out.ok = allOk;
+      if (!allOk) {
         // Disambiguate the two ways a frame can be blank using the occlusion query:
         // samples passed with no visible output means the shader ran but wrote nothing
         // (e.g. cleared/discarded colour); no samples means the geometry never covered.
         if (out.counters.occlusionAvailable) {
-          if (out.counters.occlusionSamplesPassed > 0 && check.coveredPixels == 0)
+          if (out.counters.occlusionSamplesPassed > 0 && outputCount == 1)
             steps.push_back("diagnosis: " + std::to_string(out.counters.occlusionSamplesPassed) +
                             " occlusion samples passed, so geometry rasterised but produced no "
                             "visible colour (fragment shader wrote black or discarded)");

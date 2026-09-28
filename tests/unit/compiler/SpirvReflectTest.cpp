@@ -48,6 +48,7 @@ constexpr std::uint32_t DecInputAttachmentIndex = 43;
 
 constexpr std::uint32_t SCUniform = 2;
 constexpr std::uint32_t SCInput = 1;
+constexpr std::uint32_t SCOutput = 3;
 constexpr std::uint32_t SCPushConstant = 9;
 constexpr std::uint32_t SCStorageBuffer = 12;
 constexpr std::uint32_t SCUniformConstant = 0;
@@ -107,6 +108,19 @@ SpvBuilder threeStorageBuffers() {
   b.op(OpTypePointer, {3, SCStorageBuffer, 2}); // %3 = ptr StorageBuffer %2
   for (std::uint32_t i = 0; i < 3; ++i)
     b.op(OpVariable, {3, 10 + i, SCStorageBuffer});
+  return b;
+}
+
+/// A fragment module declaring `count` colour outputs at locations 0..count-1.
+SpvBuilder fragmentColorOutputs(std::uint32_t count) {
+  SpvBuilder b;
+  for (std::uint32_t i = 0; i < count; ++i)
+    b.annot(OpDecorate, {20 + i, DecLocation, i});
+  b.op(OpTypeFloat, {1, 32});
+  b.op(OpTypeVector, {2, 1, 4});
+  b.op(OpTypePointer, {3, SCOutput, 2});
+  for (std::uint32_t i = 0; i < count; ++i)
+    b.op(OpVariable, {3, 20 + i, SCOutput});
   return b;
 }
 
@@ -674,6 +688,57 @@ TEST(SpirvReflectTest, MergeWithEmptyStagesIsSafe) {
 
   const auto merged = csrun::mergeSpirvReflections(v.value(), empty);
   EXPECT_EQ(merged.descriptors.size(), 3u);
+}
+
+//===----------------------------------------------------------------------===//
+// colour output count
+//===----------------------------------------------------------------------===//
+
+TEST(SpirvReflectTest, SingleColourOutputCountsAsOne) {
+  const SpvBuilder b = fragmentColorOutputs(1);
+  auto r = csrun::reflectSpirvModule(b.words(), SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  EXPECT_EQ(r.value().colorOutputCount, 1u);
+}
+
+TEST(SpirvReflectTest, CountsEveryDeclaredColourOutput) {
+  const SpvBuilder b = fragmentColorOutputs(3);
+  auto r = csrun::reflectSpirvModule(b.words(), SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  // The runner sizes its render pass from this, so an undercount here silently leaves the
+  // extra locations undefined.
+  EXPECT_EQ(r.value().colorOutputCount, 3u);
+}
+
+TEST(SpirvReflectTest, SparseOutputLocationsCountByHighestLocation) {
+  SpvBuilder b;
+  b.annot(OpDecorate, {20, DecLocation, 0});
+  b.annot(OpDecorate, {21, DecLocation, 3}); // gaps at 1..2 still need attachments
+  b.op(OpTypeFloat, {1, 32});
+  b.op(OpTypeVector, {2, 1, 4});
+  b.op(OpTypePointer, {3, SCOutput, 2});
+  b.op(OpVariable, {3, 20, SCOutput});
+  b.op(OpVariable, {3, 21, SCOutput});
+  auto r = csrun::reflectSpirvModule(b.words(), SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  EXPECT_EQ(r.value().colorOutputCount, 4u);
+}
+
+TEST(SpirvReflectTest, ModuleWithoutColourOutputsReportsZero) {
+  const SpvBuilder b = threeStorageBuffers();
+  auto r = csrun::reflectSpirvModule(b.words(), SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  // Zero means "nothing declared"; the runner treats it as a plain single-target shader.
+  EXPECT_EQ(r.value().colorOutputCount, 0u);
+}
+
+TEST(SpirvReflectTest, MergeTakesColourOutputsFromTheFragmentStage) {
+  const SpvBuilder b = fragmentColorOutputs(3);
+  auto f = csrun::reflectSpirvModule(b.words(), SpirvReflectStage::Fragment);
+  ASSERT_TRUE(f.hasValue());
+  const csrun::SpirvModuleReflection empty;
+  const auto merged = csrun::mergeSpirvReflections(empty, f.value());
+  EXPECT_EQ(merged.colorOutputCount, 3u);
 }
 
 //===----------------------------------------------------------------------===//

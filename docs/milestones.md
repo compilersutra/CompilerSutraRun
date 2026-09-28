@@ -202,11 +202,15 @@ of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
 |-----|---------|-----------|
-| `FAIL_BLACK` | 5 | `bufferdeviceaddress` needs a BDA-backed descriptor; `deferred` needs >1 colour attachment (MRT gbuffer); `pbrbasic`/`offscreen`/`displacement` need scene data the smoke defaults cannot invent |
-| RGB nondeterminism / flat | 2 | `ssao` (MRT) and `terraintessellation` disagree or output nothing between two identical draws — under investigation |
+| `FAIL_BLACK` | 7 | Scene data, not missing capability. Each is one output location with 0–3 sampled images; the smoke pass binds a shared white texture and primes UBOs from the reflected layout, which is not enough to light a scene. `deferred` is the clearest case: `ambient` is `0.0` in the shader and the light UBO is zeroed, so `atten = radius/(dist²+1) = 0` and the frame is `(0,0,0,255)` **by arithmetic** — the run log shows `OCCLUSION=4096` and `FS/PS=4096`, so the draw ran and the shader wrote. `pbrbasic`, `offscreen`, `displacement`, `bufferdeviceaddress`, `ssao`, `terraintessellation` are the same shape |
 | `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
 | Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
+| `FAIL_COMPUTE_RES` | 1 | compute resource binding gap |
 | glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+A blank frame is only a coverage bug when the workload could have produced colour. These
+seven are not evidence of a runner defect, and inventing light positions to turn them green
+would be fabricating the result, so they stay FAIL with the data requirement stated.
 
 `subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
 and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,
@@ -232,6 +236,20 @@ Determinism is judged on RGB only. A shader that assigns just `.rgb` leaves the 
 output component undefined per SPIR-V, and RADV fills it with register garbage — two
 identical draws differed on 14–18% of texels in alpha alone, which says nothing about the
 draw. See `FrameCheckConfig::compareMask`.
+
+Multiple render targets are sized from reflection rather than assumed. `SpirvReflect`
+reports `colorOutputCount` — the highest `Location` on a fragment output, plus one — and
+the smoke pass builds that many colour attachments in the render pass, the framebuffer, the
+blend state, the clear values, and the readback. Every target is read back and frame-checked
+individually, and `ok` is the conjunction.
+
+This was a false green, not a missing feature. `deferred_mrt` passed while running
+`mrt.frag` against a single-attachment pipeline: locations 1 and 2 were never bound, and a
+fragment write to an unbound colour location is undefined rather than harmlessly dropped.
+Reverting just the blend-state count reproduces it — targets 1 and 2 come back as pure clear
+black and the run now fails with `colour target 1 of 3 failed evidence checks`. The test now
+reports `PASS (vkCmdDraw + pixel readback x3)` with per-target coverage, so all three
+location writes are covered by evidence instead of one of them.
 
 Tracking: [milestone/13](https://github.com/compilersutra/CompilerSutraRun/milestone/13) · [issue #2](https://github.com/compilersutra/CompilerSutraRun/issues/2)
 

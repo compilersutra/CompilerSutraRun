@@ -74,6 +74,9 @@ struct VulkanSmokeResult {
   std::uint8_t centerG = 0;
   std::uint8_t centerB = 0;
   std::uint8_t centerA = 0;
+  /// Colour targets whose readback was checked. 1 for a single-target shader; an MRT
+  /// shader is only `ok` when every target passed its own frame check.
+  std::uint32_t colorTargetsChecked = 0;
   std::uint32_t framesPresented = 0;
 };
 

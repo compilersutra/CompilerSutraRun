@@ -53,6 +53,7 @@ constexpr std::uint32_t DecInputAttachmentIndex = 43;
 // Storage classes
 constexpr std::uint32_t SCUniformConstant = 0;
 constexpr std::uint32_t SCInput = 1;
+constexpr std::uint32_t SCOutput = 3;
 constexpr std::uint32_t SCUniform = 2;
 constexpr std::uint32_t SCPushConstant = 9;
 constexpr std::uint32_t SCStorageBuffer = 12;
@@ -498,6 +499,10 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
         const Decor &d = decors[resultId];
         const TypeInfo pointee = unwrapPointer(types, resultType);
 
+        if (storage == SCOutput && isFragment && d.hasLocation && !d.hasBuiltIn) {
+          out.colorOutputCount = std::max(out.colorOutputCount, d.location + 1);
+        }
+
         if (storage == SCInput && isVertex && d.hasLocation && !d.hasBuiltIn) {
           SpirvVertexAttribute attr;
           attr.location = d.location;
@@ -607,6 +612,9 @@ SpirvModuleReflection mergeSpirvReflections(const SpirvModuleReflection &vert,
   out.usesRuntimeDescriptorArray =
       vert.usesRuntimeDescriptorArray || frag.usesRuntimeDescriptorArray;
   out.usesShaderClock = vert.usesShaderClock || frag.usesShaderClock;
+  // Only fragment outputs are collected, so this is the fragment count; max keeps it safe
+  // if another stage ever gains user outputs.
+  out.colorOutputCount = std::max(vert.colorOutputCount, frag.colorOutputCount);
   if (extra.geometry)
     orFlags(out, *extra.geometry);
   if (extra.tessControl)
