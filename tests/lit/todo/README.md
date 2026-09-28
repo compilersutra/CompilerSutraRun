@@ -48,12 +48,13 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | `compute_ubo` | `execute/corpus/compute_ubo/` |
 | `storage_image` | `execute/corpus/storage_image/` |
 | `input_attachments` | `execute/corpus/input_attachments/` (plus `subpasses/`, `dynamicrenderinglocalread/`) |
+| `ray_tracing_stages` | callable / any-hit / intersection shaders bound from the declared stage list |
 
 ## Current XFAIL probes
 
 | Folder | Missing capability |
 |--------|--------------------|
-| `buffer_device_address` | BDA + address push constants |
+| `buffer_device_address` | BDA + address push constants — **implemented** (`306a052`), pending promotion |
 | `indirect_draw` | `vkCmdDrawIndirect` |
 | `inline_uniform` | inline uniform blocks |
 | `ray_query` | ray query / AS |
@@ -72,3 +73,4 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | `depth_stencil` | toon/outline smoke draws color without a depth attachment |
 | multi-pass | still single-subpass; the `subpassInput` path adds a second subpass, and `pbrbasic`/`deferred` still want a scene |
 | ~~MRT~~ | **closed** — `SpirvReflect::colorOutputCount` sizes the render pass, blend state, clears, and readback, and every target is frame-checked individually. `deferred_mrt` was a false green: it passed with locations 1 and 2 unbound |
+| ray-tracing validation | the RT path only checks "any pixel non-black" — no coverage, distinct-colour, or determinism check like the graphics path uses. A single stray pixel passes it |

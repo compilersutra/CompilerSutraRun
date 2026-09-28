@@ -197,16 +197,22 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **79 PASS / 16 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **82 PASS / 13 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
 |-----|---------|-----------|
 | `FAIL_BLACK` | 6 | Scene data, not missing capability. Each is one output location with 0–3 sampled images; the smoke pass binds a shared white texture and primes UBOs from the reflected layout, which is not enough to light a scene. `deferred` is the clearest case: `ambient` is `0.0` in the shader and the light UBO is zeroed, so `atten = radius/(dist²+1) = 0` and the frame is `(0,0,0,255)` **by arithmetic** — the run log shows `OCCLUSION=4096` and `FS/PS=4096`, so the draw ran and the shader wrote. `pbrbasic`, `offscreen`, `displacement`, `ssao`, `terraintessellation` are the same shape |
-| `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
+| `FAIL_OTHER` | 4 | `raytracinggltf` needs real glTF geometry and a runtime texture array (its any-hit shader indexes a node buffer by `gl_GeometryIndexEXT`); the other three are ray-tracing samples that need scene data |
 | Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
 | `FAIL_COMPUTE_RES` | 1 | compute resource binding gap |
 | glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+`FAIL_STAGE` is closed. The ray-tracing smoke path builds its pipeline from the stages a
+workload declares instead of a fixed raygen + miss + closest-hit triple, so callable,
+any-hit and intersection shaders are bound and run rather than rejected up front. A
+declared-but-unbound stage is a real shader that never runs, which is not the same as a
+workload that omits it.
 
 A blank frame is only a coverage bug when the workload could have produced colour. These
 six are not evidence of a runner defect, and inventing light positions to turn them green
