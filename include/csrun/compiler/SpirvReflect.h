@@ -41,6 +41,17 @@ enum class SpirvReflectStage {
   Task,
 };
 
+/// A matrix found inside a uniform/storage block, at an absolute byte offset.
+struct SpirvBlockMember {
+  std::uint32_t offset = 0;
+  /// Total bytes the matrix occupies, including every element when it is an array
+  /// (`mat4 model[3]` → 192). Zero-padded array tails are not counted.
+  std::uint32_t sizeBytes = 0;
+  bool isMatrix = true;
+  std::uint32_t columns = 0; // mat4 → 4
+  std::uint32_t rows = 0;    // mat4 → 4
+};
+
 struct SpirvDescriptorBinding {
   std::uint32_t set = 0;
   std::uint32_t binding = 0;
@@ -48,6 +59,11 @@ struct SpirvDescriptorBinding {
   std::uint32_t count = 1;
   /// Best-effort byte size for UBO/SSBO (0 → caller picks default).
   std::uint32_t sizeBytes = 0;
+  /// Matrices reachable from the block, flattened to absolute byte offsets. Structs are
+  /// walked recursively and array elements are expanded, so `Instance{ mat4 model; ... }
+  /// instance[8]` yields eight entries. Empty when the module did not decorate member
+  /// offsets, or the block declares no matrices — callers must keep a fallback then.
+  std::vector<SpirvBlockMember> members;
   bool fromVertex = false;
   bool fromFragment = false;
   bool fromGeometry = false;

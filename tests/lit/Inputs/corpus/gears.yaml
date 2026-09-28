@@ -1,5 +1,4 @@
-# Needs real model/camera push or UBO data (gears draws black).
-name: todo_gears
+name: corpus_gears
 operation: spirv
 backend: vulkan
 shaders:

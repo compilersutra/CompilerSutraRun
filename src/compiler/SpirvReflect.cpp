@@ -165,6 +165,89 @@ std::uint32_t typeSizeBytes(const std::unordered_map<std::uint32_t, TypeInfo> &t
   }
 }
 
+/// Flatten every matrix in a uniform/storage block down to an absolute byte offset.
+///
+/// A block is rarely a flat run of mat4s: `gears` puts `model[3]` after a vec4, and
+/// `texturearray` puts `Instance { mat4 model; float4 arrayIndex; } instance[8]` after
+/// two mat4s. A flat, top-level-only view misses both, so smoke defaults would leave
+/// the model matrix zero and collapse the geometry (`CLIP_P=0`).
+///
+/// Structs are walked recursively and array elements are expanded, so a caller can
+/// simply write identity at every reported offset. Bounded by `maxMatrices` so a
+/// runtime-sized array cannot make this unbounded.
+void collectMatricesAt(const std::unordered_map<std::uint32_t, TypeInfo> &types,
+                       std::uint32_t typeId, std::uint32_t baseOffset,
+                       const std::unordered_map<std::uint32_t, MemberDecor> &memberDecors,
+                       std::vector<SpirvBlockMember> &out, int depth,
+                       std::size_t maxMatrices) {
+  if (depth > 8 || out.size() >= maxMatrices)
+    return;
+  auto sit = types.find(typeId);
+  if (sit == types.end())
+    return;
+  const TypeInfo &st = sit->second;
+  auto md = memberDecors.find(typeId);
+  if (md == memberDecors.end())
+    return;
+  for (std::uint32_t i = 0; i < st.members.size() && out.size() < maxMatrices; ++i) {
+    auto o = md->second.offset.find(i);
+    if (o == md->second.offset.end())
+      continue;
+    const std::uint32_t off = baseOffset + o->second;
+    std::uint32_t shapeId = st.members[i];
+    // Unwrap arrays to reach the element type; the member's full size is kept so the
+    // caller can tell how many elements the array spans.
+    std::uint32_t span = 1;
+    for (int unwrap = 0; unwrap < 4; ++unwrap) {
+      auto ait = types.find(shapeId);
+      if (ait == types.end())
+        break;
+      if (ait->second.kind != TypeKind::Array && ait->second.kind != TypeKind::RuntimeArray)
+        break;
+      shapeId = ait->second.elemType;
+      if (span == 1)
+        span = std::max<std::uint32_t>(1, ait->second.elemCount);
+    }
+    auto mit = types.find(shapeId);
+    if (mit == types.end())
+      continue;
+    if (mit->second.kind == TypeKind::Matrix) {
+      SpirvBlockMember m;
+      m.offset = off;
+      m.columns = mit->second.elemCount;
+      auto cit = types.find(mit->second.elemType);
+      m.rows = (cit != types.end()) ? cit->second.elemCount : 0;
+      m.isMatrix = true;
+      m.sizeBytes = m.rows * m.columns * 4u * span;
+      out.push_back(m);
+      continue;
+    }
+    if (mit->second.kind == TypeKind::Struct) {
+      const std::uint32_t elemSize = typeSizeBytes(types, shapeId, memberDecors);
+      if (elemSize == 0)
+        continue;
+      for (std::uint32_t e = 0; e < span && out.size() < maxMatrices; ++e)
+        collectMatricesAt(types, shapeId, off + e * elemSize, memberDecors, out, depth + 1,
+                          maxMatrices);
+    }
+  }
+}
+
+bool collectBlockMembers(const std::unordered_map<std::uint32_t, TypeInfo> &types,
+                         std::uint32_t blockTypeId,
+                         const std::unordered_map<std::uint32_t, MemberDecor> &memberDecors,
+                         std::vector<SpirvBlockMember> &out) {
+  auto sit = types.find(blockTypeId);
+  if (sit == types.end() || sit->second.kind != TypeKind::Struct)
+    return false;
+  if (memberDecors.find(blockTypeId) == memberDecors.end())
+    return false;
+  constexpr std::size_t kMaxMatrices = 256;
+  const std::size_t before = out.size();
+  collectMatricesAt(types, blockTypeId, 0, memberDecors, out, 0, kMaxMatrices);
+  return out.size() > before;
+}
+
 TypeInfo unwrapPointer(const std::unordered_map<std::uint32_t, TypeInfo> &types, std::uint32_t id) {
   auto it = types.find(id);
   if (it == types.end())
@@ -469,6 +552,7 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
             b.sizeBytes = typeSizeBytes(types, ptr.elemType, memberDecors);
             if (b.sizeBytes == 0)
               b.sizeBytes = 256;
+            collectBlockMembers(types, ptr.elemType, memberDecors, b.members);
           }
           b.fromVertex = isVertex;
           b.fromFragment = isFragment;

@@ -75,8 +75,62 @@ Expected<void> createHostBuffer(VkPhysicalDevice physical, VkDevice device, VkDe
   return {};
 }
 
-void fillIdentityUbo(void *ptr, std::uint32_t sizeBytes) {
+/// Write an identity matrix for an `rows`-major column matrix of `columns` columns
+/// starting at `off`. Column c occupies floats [off + c*rows, off + c*rows + rows).
+void writeIdentityMatrix(void *base, std::uint32_t off, std::uint32_t rows,
+                         std::uint32_t columns) {
+  if (rows != columns)
+    return; // non-square: no diagonal identity, leave the zeros in place
+  auto *f = reinterpret_cast<float *>(static_cast<std::uint8_t *>(base) + off);
+  for (std::uint32_t c = 0; c < columns; ++c)
+    f[c * rows + c] = 1.0f;
+}
+
+/// Fill a uniform/storage block with smoke defaults.
+///
+/// When the block's matrix layout was reflected, identity is written at each reported
+/// matrix offset. The older "identity at every 64-byte boundary" heuristic is wrong for
+/// any block that does not begin with a whole number of mat4s: `gears` declares
+/// `projection; view; lightpos; model[3]`, so `model[0]` begins at byte 144 and the
+/// heuristic never touched it, leaving the model matrix zero and collapsing the triangle
+/// (`CLIP_P=0`). Without reflected layout we keep the old behaviour, which is correct for
+/// the common mat4-first blocks.
+void fillIdentityUbo(void *ptr, std::uint32_t sizeBytes,
+                     const std::vector<SpirvBlockMember> *matrices = nullptr) {
   std::memset(ptr, 0, sizeBytes);
+  if (matrices != nullptr && !matrices->empty()) {
+    for (const SpirvBlockMember &m : *matrices) {
+      if (m.offset >= sizeBytes)
+        continue;
+      const std::uint32_t stride = m.rows * m.columns * 4u;
+      if (stride == 0)
+        continue;
+      const std::uint32_t end = std::min(sizeBytes, m.offset + m.sizeBytes);
+      for (std::uint32_t off = m.offset; off + stride <= end; off += stride)
+        writeIdentityMatrix(ptr, off, m.rows, m.columns);
+    }
+    // Give the first matrix-free 16-byte slot a plausible eye position. Several corpus
+    // shaders divide by viewPos, and an all-zero vector sends them to NaN, which lands
+    // as black pixels rather than an error. Skipped entirely when every slot is covered
+    // by a matrix, since there is then nothing else in the block.
+    std::vector<bool> taken(sizeBytes, false);
+    for (const SpirvBlockMember &m : *matrices) {
+      const std::uint32_t end = std::min(sizeBytes, m.offset + m.sizeBytes);
+      for (std::uint32_t o = m.offset; o < end; ++o)
+        taken[o] = true;
+    }
+    for (std::uint32_t o = 0; o + 16 <= sizeBytes; o += 16) {
+      if (taken[o] || taken[o + 15])
+        continue;
+      auto *v = reinterpret_cast<float *>(static_cast<std::uint8_t *>(ptr) + o);
+      v[0] = 0.0f;
+      v[1] = 0.0f;
+      v[2] = 2.0f;
+      v[3] = 1.0f;
+      break;
+    }
+    return;
+  }
   auto *f = static_cast<float *>(ptr);
   // Identity for every full mat4 that fits.
   const std::uint32_t mats = sizeBytes / 64;
@@ -615,7 +669,7 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
         vulkanDestroyGraphicsResources(device, res);
         return created.error();
       }
-      fillIdentityUbo(mapped, static_cast<std::uint32_t>(sz));
+      fillIdentityUbo(mapped, static_cast<std::uint32_t>(sz), &b.members);
       vkUnmapMemory(device, mem);
       if (b.kind == SpirvDescriptorKind::UniformBuffer) {
         res.uboBuffers.push_back(buf);

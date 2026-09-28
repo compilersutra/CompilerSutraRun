@@ -26,6 +26,8 @@ using csrun::SpirvReflectStage;
 constexpr std::uint16_t OpTypeInt = 21;
 constexpr std::uint16_t OpTypeFloat = 22;
 constexpr std::uint16_t OpTypeVector = 23;
+constexpr std::uint16_t OpTypeMatrix = 24;
+constexpr std::uint16_t OpTypeArray = 28;
 constexpr std::uint16_t OpTypeImage = 25;
 constexpr std::uint16_t OpTypeSampledImage = 27;
 constexpr std::uint16_t OpTypeRuntimeArray = 29;
@@ -251,6 +253,111 @@ TEST(SpirvReflectTest, BlockDecorationYieldsUniformBuffer) {
   ASSERT_TRUE(r.hasValue());
   ASSERT_EQ(r.value().descriptors.size(), 1u);
   EXPECT_EQ(r.value().descriptors[0].kind, SpirvDescriptorKind::UniformBuffer);
+}
+
+TEST(SpirvReflectTest, ReflectsBlockMemberLayoutIncludingNonMat4AlignedMatrices) {
+  // Reproduces the `gears` block: mat4 projection, mat4 view, vec4 lightpos, then
+  // mat4 model[3]. `model[0]` starts at byte 144, which is not a 64-byte boundary, so
+  // smoke defaults that assume "identity at every 64-byte boundary" silently leave it
+  // zero. Reflection has to report the real offsets.
+  SpvBuilder b;
+  b.op(OpTypeFloat, {1, 32});                      // %1 = float
+  b.op(OpTypeVector, {2, 1, 4});                  // %2 = vec4
+  b.op(OpTypeMatrix, {3, 2, 4});                  // %3 = mat4
+  b.op(OpConstant, {1, 20, 3});                    // %20 = 3 (array length)
+  b.raw((4u << 16) | OpTypeArray);                // OpTypeArray %5 = mat4(%3) [%20]
+  b.raw(5);
+  b.raw(3);
+  b.raw(20);
+  b.op(OpTypeStruct, {6, 3, 3, 2, 5});            // projection, view, lightpos, model[3]
+  b.annot(OpMemberDecorate, {6, 0, DecOffset, 0});
+  b.annot(OpMemberDecorate, {6, 1, DecOffset, 64});
+  b.annot(OpMemberDecorate, {6, 2, DecOffset, 128});
+  b.annot(OpMemberDecorate, {6, 3, DecOffset, 144});
+  b.annot(OpDecorate, {6, DecBlock});
+  b.op(OpTypePointer, {7, SCUniform, 6});
+  b.op(OpVariable, {7, 10, SCUniform});
+  b.annot(OpDecorate, {10, DecBinding, 0});
+  const auto words = b.words();
+  auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Vertex);
+  ASSERT_TRUE(r.hasValue());
+  ASSERT_EQ(r.value().descriptors.size(), 1u);
+  const auto &d = r.value().descriptors[0];
+  ASSERT_EQ(d.kind, SpirvDescriptorKind::UniformBuffer);
+  // The vec4 is not a matrix, so it is not reported. Size still reflects the whole block.
+  EXPECT_EQ(d.sizeBytes, 336u);
+  ASSERT_EQ(d.members.size(), 3u);
+
+  EXPECT_EQ(d.members[0].offset, 0u);
+  EXPECT_EQ(d.members[0].columns, 4u);
+  EXPECT_EQ(d.members[0].rows, 4u);
+  EXPECT_EQ(d.members[0].sizeBytes, 64u);
+
+  EXPECT_EQ(d.members[1].offset, 64u);
+  EXPECT_EQ(d.members[1].sizeBytes, 64u);
+
+  // The array of mat4 starts mid-alignment; this is the offset the old heuristic missed.
+  EXPECT_EQ(d.members[2].offset, 144u);
+  EXPECT_EQ(d.members[2].sizeBytes, 192u);
+  EXPECT_EQ(d.members[2].columns, 4u);
+}
+
+TEST(SpirvReflectTest, FlattensMatricesNestedInArraysOfStructs) {
+  // `texturearray` declares `Instance{ mat4 model; float4 arrayIndex; } instance[8]`
+  // after two mat4s. Reaching the per-instance models is what keeps the instanced
+  // geometry on screen; a top-level-only view leaves them zero and the draw is clipped.
+  SpvBuilder b;
+  b.op(OpTypeFloat, {1, 32});                      // %1 = float
+  b.op(OpTypeVector, {2, 1, 4});                  // %2 = vec4
+  b.op(OpTypeMatrix, {3, 2, 4});                  // %3 = mat4
+  b.op(OpTypeStruct, {6, 3, 2});                  // %6 = Instance { model, arrayIndex }
+  b.annot(OpMemberDecorate, {6, 0, DecOffset, 0});
+  b.annot(OpMemberDecorate, {6, 1, DecOffset, 64});
+  b.op(OpConstant, {1, 20, 8});                    // %20 = 8
+  b.raw((4u << 16) | OpTypeArray);                // %5 = Instance[8]
+  b.raw(5);
+  b.raw(6);
+  b.raw(20);
+  b.op(OpTypeStruct, {7, 3, 3, 5});               // projection, view, instance[8]
+  b.annot(OpMemberDecorate, {7, 0, DecOffset, 0});
+  b.annot(OpMemberDecorate, {7, 1, DecOffset, 64});
+  b.annot(OpMemberDecorate, {7, 2, DecOffset, 128});
+  b.annot(OpDecorate, {7, DecBlock});
+  b.op(OpTypePointer, {8, SCUniform, 7});
+  b.op(OpVariable, {8, 10, SCUniform});
+  b.annot(OpDecorate, {10, DecBinding, 0});
+  const auto words = b.words();
+  auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Vertex);
+  ASSERT_TRUE(r.hasValue());
+  ASSERT_EQ(r.value().descriptors.size(), 1u);
+  const auto &d = r.value().descriptors[0];
+  // projection, view, then all eight instance models. Instance is 80 bytes
+  // (mat4 + vec4), so the models land at 128, 208, 288, ...
+  ASSERT_EQ(d.members.size(), 10u);
+  EXPECT_EQ(d.members[0].offset, 0u);
+  EXPECT_EQ(d.members[1].offset, 64u);
+  for (std::size_t i = 2; i < d.members.size(); ++i) {
+    EXPECT_EQ(d.members[i].offset, 128u + static_cast<std::uint32_t>(i - 2) * 80u)
+        << "instance model " << (i - 2);
+    EXPECT_EQ(d.members[i].sizeBytes, 64u);
+  }
+}
+
+TEST(SpirvReflectTest, BlockWithoutMemberOffsetsReportsNoMatrices) {
+  // No OpMemberDecorate → no layout to honour, so callers must keep their fallback
+  // rather than inventing offsets.
+  SpvBuilder b;
+  b.op(OpTypeFloat, {1, 32});
+  b.op(OpTypeStruct, {2, 1});
+  b.annot(OpDecorate, {2, DecBlock});
+  b.op(OpTypePointer, {3, SCUniform, 2});
+  b.op(OpVariable, {3, 10, SCUniform});
+  b.annot(OpDecorate, {10, DecBinding, 0});
+  const auto words = b.words();
+  auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  ASSERT_EQ(r.value().descriptors.size(), 1u);
+  EXPECT_TRUE(r.value().descriptors[0].members.empty());
 }
 
 TEST(SpirvReflectTest, ReflectsCombinedImageSampler) {

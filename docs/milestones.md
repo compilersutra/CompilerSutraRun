@@ -197,17 +197,24 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **74 PASS / 21 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **75 PASS / 20 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
 |-----|---------|-----------|
-| `FAIL_BLACK` | 6 | Shaders read data the runner does not supply (e.g. MRT gbuffers in `deferred`, `ssao` need >1 colour attachment) |
-| RGB nondeterminism | 2 | `ssao`, `terraintessellation` disagree between two identical draws — under investigation |
+| `FAIL_BLACK` | 5 | `bufferdeviceaddress` needs a BDA-backed descriptor; `deferred` needs >1 colour attachment (MRT gbuffer); `pbrbasic`/`offscreen`/`displacement` need scene data the smoke defaults cannot invent |
+| RGB nondeterminism / flat | 2 | `ssao` (MRT) and `terraintessellation` disagree or output nothing between two identical draws — under investigation |
 | `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
 | `FAIL_INPUT_ATTACH` | 3 | subpass input attachments |
 | Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
 | glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+Smoke defaults fill uniform blocks from the *reflected* matrix layout, not from a
+64-byte-granularity guess. `SpirvReflect` flattens every matrix in a block to an absolute
+offset, walking nested structs and expanding array elements. This matters: `gears` puts
+`model[3]` after a `lightpos` vec4 (so `model[0]` starts at byte 144) and `texturearray`
+puts `Instance{ mat4 model; … } instance[8]` after two mat4s — the old heuristic left
+those model matrices zero, the geometry collapsed, and both drew nothing.
 
 Determinism is judged on RGB only. A shader that assigns just `.rgb` leaves the alpha
 output component undefined per SPIR-V, and RADV fills it with register garbage — two

@@ -7,14 +7,14 @@ One representative workload **per sample folder**. **Scan breadth-first**, then 
 ./tools/csrun-breadth
 ```
 
-Last run: **PASS=74 FAIL=21 SKIP=0** (139.6s)
+Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 
 ## Buckets (priority = fail count)
 
 | Bucket | Count | Meaning | Next action |
 |--------|------:|---------|-------------|
-| `PASS` | 74 | Works today | Keep in execute/corpus regression |
-| `FAIL_BLACK` | 8 | Runs but black / wrong | data: push/UBO/draw path |
+| `PASS` | 75 | Works today | Keep in execute/corpus regression |
+| `FAIL_BLACK` | 7 | Runs but black / wrong | data: push/UBO/draw path |
 | `FAIL_STAGE` | 4 | Missing pipeline stage | todo: geometry / tess / mesh / raytracing |
 | `FAIL_INPUT_ATTACH` | 3 | subpassInput | todo: input_attachments |
 | `FAIL_OTHER` | 3 | other | inspect .cache/breadth-scan/<sample>.log |
@@ -24,7 +24,7 @@ Last run: **PASS=74 FAIL=21 SKIP=0** (139.6s)
 
 ## Samples by bucket
 
-### PASS (74)
+### PASS (75)
 
 - `base`
 - `bloom`
@@ -49,6 +49,7 @@ Last run: **PASS=74 FAIL=21 SKIP=0** (139.6s)
 - `dynamicrendering`
 - `dynamicuniformbuffer`
 - `fragmentshaderbarycentrics`
+- `gears`
 - `geometryshader`
 - `gltfloading`
 - `gltfscenerendering`
@@ -101,12 +102,11 @@ Last run: **PASS=74 FAIL=21 SKIP=0** (139.6s)
 - `viewportarray`
 - `vulkanscene`
 
-### FAIL_BLACK (8)
+### FAIL_BLACK (7)
 
 - `bufferdeviceaddress` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `deferred` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `displacement` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
-- `gears` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `offscreen` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `pbrbasic` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
 - `ssao` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
