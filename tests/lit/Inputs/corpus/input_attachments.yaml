@@ -1,5 +1,5 @@
 # Needs subpass / input attachment support (subpassInput).
-name: todo_input_attachments
+name: corpus_input_attachments
 operation: spirv
 backend: vulkan
 shaders:

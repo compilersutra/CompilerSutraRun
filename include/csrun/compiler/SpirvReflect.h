@@ -22,6 +22,8 @@ enum class SpirvDescriptorKind {
   SampledImage,
   Sampler,
   StorageImage,
+  /// `subpassInput` — read from a render pass attachment of the same index.
+  InputAttachment,
   Unknown,
 };
 
@@ -64,6 +66,9 @@ struct SpirvDescriptorBinding {
   /// instance[8]` yields eight entries. Empty when the module did not decorate member
   /// offsets, or the block declares no matrices — callers must keep a fallback then.
   std::vector<SpirvBlockMember> members;
+  /// `InputAttachmentIndex` for `kind == InputAttachment`: which attachment of the
+  /// render pass this descriptor reads. Defaults to 0 when undecorated.
+  std::uint32_t inputAttachmentIndex = 0;
   bool fromVertex = false;
   bool fromFragment = false;
   bool fromGeometry = false;

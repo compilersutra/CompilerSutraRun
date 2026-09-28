@@ -48,6 +48,11 @@ struct VulkanGraphicsResources {
   std::vector<std::uint8_t> pushBytes;
   VkShaderStageFlags pushStages = 0;
 
+  /// `subpassInput` bindings. Their views are render pass attachments, which the caller
+  /// creates after this struct exists, so the descriptor writes are deferred to
+  /// `vulkanWriteInputAttachmentDescriptors`.
+  std::vector<SpirvDescriptorBinding> inputAttachments;
+
   bool hasDescriptors = false;
   bool hasVertexAttrs = false;
 };
@@ -60,6 +65,15 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
                               std::vector<std::string> &steps);
 
 void vulkanDestroyGraphicsResources(VkDevice device, VulkanGraphicsResources &res);
+
+/// Point every `subpassInput` descriptor at a render pass attachment view.
+///
+/// `views` is indexed by `SpirvDescriptorBinding::inputAttachmentIndex`, so the caller
+/// must pass one view per declared input attachment. Every element of a `subpassInput`
+/// array shares the attachment the array was decorated with.
+Expected<void>
+vulkanWriteInputAttachmentDescriptors(VkDevice device, VulkanGraphicsResources &res,
+                                      const std::vector<VkImageView> &views);
 
 /// Bind descriptor set + vertex buffer + push constants (call inside render pass).
 void vulkanCmdBindGraphicsResources(VkCommandBuffer cmd, const VulkanGraphicsResources &res);

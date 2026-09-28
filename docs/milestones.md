@@ -197,7 +197,7 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **75 PASS / 20 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **78 PASS / 17 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
@@ -205,9 +205,21 @@ of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 | `FAIL_BLACK` | 5 | `bufferdeviceaddress` needs a BDA-backed descriptor; `deferred` needs >1 colour attachment (MRT gbuffer); `pbrbasic`/`offscreen`/`displacement` need scene data the smoke defaults cannot invent |
 | RGB nondeterminism / flat | 2 | `ssao` (MRT) and `terraintessellation` disagree or output nothing between two identical draws — under investigation |
 | `FAIL_STAGE` | 4 | geometry / tessellation / mesh / raytracing pipelines |
-| `FAIL_INPUT_ATTACH` | 3 | subpass input attachments |
 | Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
 | glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+`subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
+and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,
+and `dynamicrenderinglocalread` all execute. An attachment cannot be written and read as
+an input in one subpass, so the smoke render pass primes one attachment per declared input
+index in subpass 0 and renders the real output to an extra attachment in subpass 1.
+
+The primed values are a documented mid-grey ramp (`0.25 + 0.5·(i+1)/n`), printed in the run
+steps — placeholder data, not a G-buffer. What the tests prove is that the subpass load
+happened and the shader composed it: `subpasses` composites input 2 with a 0.05 ambient
+factor and lands on 10/255, `dynamicrenderinglocalread` uses 0.15 and lands on 29/255, both
+matching `0.75 × factor` for attachment 2's prime value. A zero or garbage read would not
+produce those numbers.
 
 Smoke defaults fill uniform blocks from the *reflected* matrix layout, not from a
 64-byte-granularity guess. `SpirvReflect` flattens every matrix in a block to an absolute

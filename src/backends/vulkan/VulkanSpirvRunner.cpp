@@ -65,6 +65,27 @@ uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryProper
   return std::numeric_limits<uint32_t>::max();
 }
 
+/// Upper bound on primed subpass-input attachments. `MAX_COLOR_ATTACHMENTS` is 8 and a
+/// `subpassInput` index has to be addressable, so anything beyond that is out of scope for
+/// the smoke path rather than silently dropped.
+constexpr uint32_t kMaxInputAttachments = 8;
+
+/// How many attachments the smoke render pass primes for `subpassInput` reads: one per
+/// declared InputAttachmentIndex, so a shader reading index 2 gets a real attachment 2.
+uint32_t inputAttachmentCount(const std::vector<SpirvDescriptorBinding> &binds) {
+  uint32_t count = 0;
+  for (const SpirvDescriptorBinding &b : binds)
+    count = std::max(count, b.inputAttachmentIndex + 1);
+  return std::min(count, kMaxInputAttachments);
+}
+
+/// Value the priming subpass clears an input attachment to: a mid-grey ramp, distinct per
+/// index so a shader that reads only one of them still lands on a defined, non-zero value.
+/// This is placeholder data, not a G-buffer — the point is to prove the subpass read works.
+float inputAttachmentPrimeValue(uint32_t index, uint32_t count) {
+  return 0.25f + 0.5f * static_cast<float>(index + 1) / static_cast<float>(count);
+}
+
 } // namespace
 
 Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
@@ -1166,40 +1187,90 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
     VkPipelineLayout layout = resources.pipelineLayout;
 
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format = VK_FORMAT_R8G8B8A8_UNORM;
-    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // `subpassInput` reads a render pass attachment, and an attachment cannot be written
+    // and read as an input in the same subpass. So a shader with subpass inputs gets
+    // `inputCount` primed attachments plus one extra attachment for the real output:
+    // subpass 0 only clears the inputs, subpass 1 renders with the pipeline. Shaders
+    // without subpass inputs keep the single-attachment, single-subpass path.
+    const uint32_t inputCount = inputAttachmentCount(resources.inputAttachments);
+    const uint32_t outputAttachment = inputCount;
+    const uint32_t attachmentCount = inputCount + 1;
+    const uint32_t subpassIndex = inputCount > 0 ? 1u : 0u;
+    if (inputCount > 0) {
+      // Print the priming values: the frame the check sees is a function of these, so the
+      // run stays auditable about what data the subpass load actually read.
+      std::string primed;
+      for (uint32_t i = 0; i < inputCount; ++i) {
+        if (i)
+          primed += ",";
+        primed += std::to_string(inputAttachmentPrimeValue(i, inputCount));
+      }
+      steps.push_back("subpass inputs: " + std::to_string(inputCount) +
+                      " primed attachment(s) [grey=" + primed + "] + 1 output attachment");
+    }
+
+    std::vector<VkAttachmentDescription> attachments(attachmentCount);
+    for (VkAttachmentDescription &a : attachments) {
+      a.format = VK_FORMAT_R8G8B8A8_UNORM;
+      a.samples = VK_SAMPLE_COUNT_1_BIT;
+      a.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      a.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      a.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
+    std::vector<VkAttachmentReference> inputRefs(inputCount);
+    for (uint32_t i = 0; i < inputCount; ++i) {
+      // Inputs keep COLOR_ATTACHMENT_OPTIMAL: the descriptor image layout and the subpass
+      // 1 reference both name it, and nothing transitions it away before the render pass ends.
+      attachments[i].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      inputRefs[i].attachment = i;
+      inputRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
+    colorRef.attachment = outputAttachment;
     colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
+    std::vector<VkSubpassDescription> subpasses(inputCount > 0 ? 2 : 1);
+    subpasses[subpassIndex].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpasses[subpassIndex].colorAttachmentCount = 1;
+    subpasses[subpassIndex].pColorAttachments = &colorRef;
+    if (inputCount > 0) {
+      // Priming subpass: colour attachments only so vkCmdBeginRenderPass clears them.
+      // No pipeline is created for it and the command buffer draws nothing in it.
+      subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+      subpasses[0].colorAttachmentCount = inputCount;
+      subpasses[0].pColorAttachments = inputRefs.data();
+      subpasses[1].inputAttachmentCount = inputCount;
+      subpasses[1].pInputAttachments = inputRefs.data();
+    }
 
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    std::vector<VkSubpassDependency> deps(inputCount > 0 ? 2 : 1);
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (inputCount > 0) {
+      // The clear that primes the inputs must be visible to the fragment shader's load.
+      deps[1].srcSubpass = 0;
+      deps[1].dstSubpass = 1;
+      deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+      deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    }
 
     VkRenderPassCreateInfo rpci{};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpci.attachmentCount = 1;
-    rpci.pAttachments = &colorAtt;
-    rpci.subpassCount = 1;
-    rpci.pSubpasses = &subpass;
-    rpci.dependencyCount = 1;
-    rpci.pDependencies = &dep;
+    rpci.attachmentCount = attachmentCount;
+    rpci.pAttachments = attachments.data();
+    rpci.subpassCount = static_cast<uint32_t>(subpasses.size());
+    rpci.pSubpasses = subpasses.data();
+    rpci.dependencyCount = static_cast<uint32_t>(deps.size());
+    rpci.pDependencies = deps.data();
     VkRenderPass renderPass = VK_NULL_HANDLE;
     r = vkCreateRenderPass(device, &rpci, nullptr, &renderPass);
     if (r != VK_SUCCESS) {
@@ -1307,7 +1378,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     gpci.pColorBlendState = &cb;
     gpci.layout = layout;
     gpci.renderPass = renderPass;
-    gpci.subpass = 0;
+    gpci.subpass = subpassIndex;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
@@ -1335,95 +1406,139 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       }
     }
 
-    // Offscreen color target
-    VkImageCreateInfo imgCi{};
-    imgCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imgCi.imageType = VK_IMAGE_TYPE_2D;
-    imgCi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imgCi.extent = {extentW, extentH, 1};
-    imgCi.mipLevels = 1;
-    imgCi.arrayLayers = 1;
-    imgCi.samples = VK_SAMPLE_COUNT_1_BIT;
-    imgCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imgCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage colorImage = VK_NULL_HANDLE;
-    r = vkCreateImage(device, &imgCi, nullptr, &colorImage);
-    if (r != VK_SUCCESS) {
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vulkanDestroyGraphicsResources(device, resources);
-      destroyShaderMods();
-      cleanup();
-      return vkError("vkCreateImage failed", r);
+    // Offscreen targets: the primed subpass inputs first, then the real colour target at
+    // `outputAttachment` -- that one is the only image read back.
+    std::vector<VkImage> targetImages(attachmentCount, VK_NULL_HANDLE);
+    std::vector<VkDeviceMemory> targetMems(attachmentCount, VK_NULL_HANDLE);
+    std::vector<VkImageView> targetViews(attachmentCount, VK_NULL_HANDLE);
+    auto destroyTargetImages = [&]() {
+      for (VkImageView v : targetViews)
+        if (v)
+          vkDestroyImageView(device, v, nullptr);
+      for (VkDeviceMemory m : targetMems)
+        if (m)
+          vkFreeMemory(device, m, nullptr);
+      for (VkImage i : targetImages)
+        if (i)
+          vkDestroyImage(device, i, nullptr);
+      targetViews.assign(attachmentCount, VK_NULL_HANDLE);
+      targetMems.assign(attachmentCount, VK_NULL_HANDLE);
+      targetImages.assign(attachmentCount, VK_NULL_HANDLE);
+    };
+
+    for (uint32_t i = 0; i < attachmentCount; ++i) {
+      VkImageCreateInfo imgCi{};
+      imgCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      imgCi.imageType = VK_IMAGE_TYPE_2D;
+      imgCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+      imgCi.extent = {extentW, extentH, 1};
+      imgCi.mipLevels = 1;
+      imgCi.arrayLayers = 1;
+      imgCi.samples = VK_SAMPLE_COUNT_1_BIT;
+      imgCi.tiling = VK_IMAGE_TILING_OPTIMAL;
+      imgCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      r = vkCreateImage(device, &imgCi, nullptr, &targetImages[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateImage failed", r);
+      }
+
+      VkMemoryRequirements imgReq{};
+      vkGetImageMemoryRequirements(device, targetImages[i], &imgReq);
+      const uint32_t imgMemType =
+          findMemoryType(physical, imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      if (imgMemType == std::numeric_limits<uint32_t>::max()) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::ResourceAllocationFailed, "no device-local memory for color image");
+      }
+      VkMemoryAllocateInfo imgAi{};
+      imgAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      imgAi.allocationSize = imgReq.size;
+      imgAi.memoryTypeIndex = imgMemType;
+      r = vkAllocateMemory(device, &imgAi, nullptr, &targetMems[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkAllocateMemory (image) failed", r);
+      }
+      vkBindImageMemory(device, targetImages[i], targetMems[i], 0);
+    }
+    if (inputCount > 0) {
+      steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" +
+                      std::to_string(extentH) + " (+" + std::to_string(inputCount) +
+                      " subpass input attachment(s))");
+    } else {
+      steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" +
+                      std::to_string(extentH));
     }
 
-    VkMemoryRequirements imgReq{};
-    vkGetImageMemoryRequirements(device, colorImage, &imgReq);
-    const uint32_t imgMemType =
-        findMemoryType(physical, imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (imgMemType == std::numeric_limits<uint32_t>::max()) {
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vulkanDestroyGraphicsResources(device, resources);
-      destroyShaderMods();
-      cleanup();
-      return Error::make(ErrorCode::ResourceAllocationFailed, "no device-local memory for color image");
+    for (uint32_t i = 0; i < attachmentCount; ++i) {
+      VkImageViewCreateInfo viewCi{};
+      viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+      viewCi.image = targetImages[i];
+      viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+      viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      viewCi.subresourceRange.levelCount = 1;
+      viewCi.subresourceRange.layerCount = 1;
+      r = vkCreateImageView(device, &viewCi, nullptr, &targetViews[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateImageView failed", r);
+      }
     }
-    VkMemoryAllocateInfo imgAi{};
-    imgAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    imgAi.allocationSize = imgReq.size;
-    imgAi.memoryTypeIndex = imgMemType;
-    VkDeviceMemory colorMem = VK_NULL_HANDLE;
-    r = vkAllocateMemory(device, &imgAi, nullptr, &colorMem);
-    if (r != VK_SUCCESS) {
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vulkanDestroyGraphicsResources(device, resources);
-      destroyShaderMods();
-      cleanup();
-      return vkError("vkAllocateMemory (image) failed", r);
-    }
-    vkBindImageMemory(device, colorImage, colorMem, 0);
-    steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" + std::to_string(extentH));
 
-    VkImageViewCreateInfo viewCi{};
-    viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewCi.image = colorImage;
-    viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewCi.subresourceRange.levelCount = 1;
-    viewCi.subresourceRange.layerCount = 1;
-    VkImageView colorView = VK_NULL_HANDLE;
-    r = vkCreateImageView(device, &viewCi, nullptr, &colorView);
-    if (r != VK_SUCCESS) {
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vulkanDestroyGraphicsResources(device, resources);
-      destroyShaderMods();
-      cleanup();
-      return vkError("vkCreateImageView failed", r);
+    if (inputCount > 0) {
+      // The views exist now, so the deferred subpass-input descriptor writes can land.
+      const std::vector<VkImageView> inputViews(targetViews.begin(),
+                                                targetViews.begin() + inputCount);
+      auto wrote = vulkanWriteInputAttachmentDescriptors(device, resources, inputViews);
+      if (!wrote) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return wrote.error();
+      }
+      steps.push_back("subpass input descriptors: " +
+                      std::to_string(resources.inputAttachments.size()) + " binding(s) -> " +
+                      std::to_string(inputCount) + " attachment view(s)");
     }
 
     VkFramebufferCreateInfo fbCi{};
     fbCi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbCi.renderPass = renderPass;
-    fbCi.attachmentCount = 1;
-    fbCi.pAttachments = &colorView;
+    fbCi.attachmentCount = attachmentCount;
+    fbCi.pAttachments = targetViews.data();
     fbCi.width = extentW;
     fbCi.height = extentH;
     fbCi.layers = 1;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     r = vkCreateFramebuffer(device, &fbCi, nullptr, &framebuffer);
     if (r != VK_SUCCESS) {
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1444,9 +1559,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     r = vkCreateBuffer(device, &bufCi, nullptr, &staging);
     if (r != VK_SUCCESS) {
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1462,9 +1575,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (hostMemType == std::numeric_limits<uint32_t>::max()) {
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1481,9 +1592,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (r != VK_SUCCESS) {
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1503,9 +1612,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkFreeMemory(device, stagingMem, nullptr);
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1623,15 +1730,31 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
         VkClearValue clear{};
         clear.color.float32[3] = 1.0f;
+        // One clear per attachment: the subpass inputs get the priming ramp, the output
+        // keeps the usual opaque black. The vectors stay alive across the render pass call.
+        std::vector<VkClearValue> clears;
+        if (inputCount > 0) {
+          clears.resize(attachmentCount);
+          for (uint32_t i = 0; i < inputCount; ++i) {
+            const float v = inputAttachmentPrimeValue(i, inputCount);
+            clears[i].color.float32[0] = v;
+            clears[i].color.float32[1] = v;
+            clears[i].color.float32[2] = v;
+            clears[i].color.float32[3] = 1.0f;
+          }
+          clears[outputAttachment].color.float32[3] = 1.0f;
+        }
         VkRenderPassBeginInfo rpBegin{};
         rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rpBegin.renderPass = renderPass;
         rpBegin.framebuffer = framebuffer;
         rpBegin.renderArea.extent = {extentW, extentH};
-        rpBegin.clearValueCount = 1;
-        rpBegin.pClearValues = &clear;
+        rpBegin.clearValueCount = clears.empty() ? 1u : static_cast<uint32_t>(clears.size());
+        rpBegin.pClearValues = clears.empty() ? &clear : clears.data();
 
         vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        if (inputCount > 0)
+          vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vulkanCmdBindGraphicsResources(cmd, resources);
         if (lastPass && withTimestamps && queryPool)
@@ -1659,8 +1782,8 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
           copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
           copy.imageSubresource.layerCount = 1;
           copy.imageExtent = {extentW, extentH, 1};
-          vkCmdCopyImageToBuffer(cmd, colorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1,
-                                 &copy);
+          vkCmdCopyImageToBuffer(cmd, targetImages[outputAttachment],
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
         }
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 4);
@@ -1768,9 +1891,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkFreeMemory(device, stagingMem, nullptr);
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
       vulkanDestroyGraphicsResources(device, resources);
@@ -1912,9 +2033,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     vkFreeMemory(device, stagingMem, nullptr);
     vkDestroyBuffer(device, staging, nullptr);
     vkDestroyFramebuffer(device, framebuffer, nullptr);
-    vkDestroyImageView(device, colorView, nullptr);
-    vkFreeMemory(device, colorMem, nullptr);
-    vkDestroyImage(device, colorImage, nullptr);
+    destroyTargetImages();
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vulkanDestroyGraphicsResources(device, resources);

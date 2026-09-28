@@ -7,16 +7,15 @@ One representative workload **per sample folder**. **Scan breadth-first**, then 
 ./tools/csrun-breadth
 ```
 
-Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
+Last run: **PASS=78 FAIL=17 SKIP=0** (137.1s)
 
 ## Buckets (priority = fail count)
 
 | Bucket | Count | Meaning | Next action |
 |--------|------:|---------|-------------|
-| `PASS` | 75 | Works today | Keep in execute/corpus regression |
+| `PASS` | 78 | Works today | Keep in execute/corpus regression |
 | `FAIL_BLACK` | 7 | Runs but black / wrong | data: push/UBO/draw path |
 | `FAIL_STAGE` | 4 | Missing pipeline stage | todo: geometry / tess / mesh / raytracing |
-| `FAIL_INPUT_ATTACH` | 3 | subpassInput | todo: input_attachments |
 | `FAIL_OTHER` | 3 | other | inspect .cache/breadth-scan/<sample>.log |
 | `FAIL_COMPILE` | 1 | glslang fail | compile XFAIL or toolchain |
 | `FAIL_COMPUTE_RES` | 1 | compute resources | extend compute generic |
@@ -24,7 +23,7 @@ Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 
 ## Samples by bucket
 
-### PASS (75)
+### PASS (78)
 
 - `base`
 - `bloom`
@@ -47,6 +46,7 @@ Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 - `descriptorsets`
 - `distancefieldfonts`
 - `dynamicrendering`
+- `dynamicrenderinglocalread`
 - `dynamicuniformbuffer`
 - `fragmentshaderbarycentrics`
 - `gears`
@@ -59,6 +59,7 @@ Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 - `imgui`
 - `indirectdraw`
 - `inlineuniformblocks`
+- `inputattachments`
 - `instancing`
 - `meshshader`
 - `multisampling`
@@ -87,6 +88,7 @@ Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 - `specializationconstants`
 - `sphericalenvmapping`
 - `stencilbuffer`
+- `subpasses`
 - `tessellation`
 - `textoverlay`
 - `texture`
@@ -118,12 +120,6 @@ Last run: **PASS=75 FAIL=20 SKIP=0** (139.7s)
 - `raytracinggltf` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'anyhit' yet (anyhit.rahit) [bac`
 - `raytracingintersection` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'intersection' yet (intersection`
 - `raytracingtextures` — `UNSUPPORTED_OPERATION: Vulkan execute does not support shader stage 'anyhit' yet (anyhit.rahit) [bac`
-
-### FAIL_INPUT_ATTACH (3)
-
-- `dynamicrenderinglocalread` — `UNSUPPORTED_OPERATION: graphics smoke does not support input attachments / subpassInput yet`
-- `inputattachments` — `UNSUPPORTED_OPERATION: graphics smoke does not support input attachments / subpassInput yet`
-- `subpasses` — `UNSUPPORTED_OPERATION: graphics smoke does not support input attachments / subpassInput yet`
 
 ### FAIL_OTHER (3)
 

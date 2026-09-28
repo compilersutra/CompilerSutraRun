@@ -47,12 +47,12 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | `descriptor_indexing` | `execute/corpus/descriptor_indexing/` |
 | `compute_ubo` | `execute/corpus/compute_ubo/` |
 | `storage_image` | `execute/corpus/storage_image/` |
+| `input_attachments` | `execute/corpus/input_attachments/` (plus `subpasses/`, `dynamicrenderinglocalread/`) |
 
 ## Current XFAIL probes
 
 | Folder | Missing capability |
 |--------|--------------------|
-| `input_attachments` | `subpassInput` / input attachments |
 | `buffer_device_address` | BDA + address push constants |
 | `indirect_draw` | `vkCmdDrawIndirect` |
 | `inline_uniform` | inline uniform blocks |
@@ -70,4 +70,4 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 | Gap | Notes |
 |-----|-------|
 | `depth_stencil` | toon/outline smoke draws color without a depth attachment |
-| multi-pass / MRT | single color target only |
+| multi-pass / MRT | single color target only (the subpass path adds an extra target, but only for `subpassInput`) |

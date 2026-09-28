@@ -44,6 +44,7 @@ constexpr std::uint32_t DecOffset = 35;
 constexpr std::uint32_t DecLocation = 30;
 constexpr std::uint32_t DecBinding = 33;
 constexpr std::uint32_t DecDescriptorSet = 34;
+constexpr std::uint32_t DecInputAttachmentIndex = 43;
 
 constexpr std::uint32_t SCUniform = 2;
 constexpr std::uint32_t SCInput = 1;
@@ -388,7 +389,23 @@ TEST(SpirvReflectTest, ReflectsStorageImageAndMarksInputAttachment) {
   EXPECT_FALSE(r.value().usesInputAttachment);
 }
 
-TEST(SpirvReflectTest, SubpassDataImageMarksInputAttachmentAndIsUnknown) {
+TEST(SpirvReflectTest, SubpassDataImageMarksInputAttachmentAndCarriesIndex) {
+  SpvBuilder b;
+  b.op(OpTypeImage, {1, 1, 6 /*DimSubpassData*/, 1, 0, 0, 1, 0});
+  b.op(OpTypePointer, {2, SCUniformConstant, 1});
+  b.op(OpVariable, {2, 10, SCUniformConstant});
+  b.annot(OpDecorate, {10, DecBinding, 0});
+  b.annot(OpDecorate, {10, DecInputAttachmentIndex, 2});
+  const auto words = b.words();
+  auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  EXPECT_TRUE(r.value().usesInputAttachment);
+  ASSERT_EQ(r.value().descriptors.size(), 1u);
+  EXPECT_EQ(r.value().descriptors[0].kind, SpirvDescriptorKind::InputAttachment);
+  EXPECT_EQ(r.value().descriptors[0].inputAttachmentIndex, 2u);
+}
+
+TEST(SpirvReflectTest, UndecoratedSubpassDataDefaultsToAttachmentZero) {
   SpvBuilder b;
   b.op(OpTypeImage, {1, 1, 6 /*DimSubpassData*/, 1, 0, 0, 1, 0});
   b.op(OpTypePointer, {2, SCUniformConstant, 1});
@@ -397,10 +414,26 @@ TEST(SpirvReflectTest, SubpassDataImageMarksInputAttachmentAndIsUnknown) {
   const auto words = b.words();
   auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Fragment);
   ASSERT_TRUE(r.hasValue());
-  EXPECT_TRUE(r.value().usesInputAttachment);
   ASSERT_EQ(r.value().descriptors.size(), 1u);
-  EXPECT_EQ(r.value().descriptors[0].kind, SpirvDescriptorKind::Unknown)
-      << "input attachments must be rejected, not silently bound";
+  EXPECT_EQ(r.value().descriptors[0].kind, SpirvDescriptorKind::InputAttachment);
+  EXPECT_EQ(r.value().descriptors[0].inputAttachmentIndex, 0u);
+}
+
+TEST(SpirvReflectTest, SampledImageWithInputAttachmentDecorationIsAnInputAttachment) {
+  // glslang is free to emit a non-subpassData dimension plus the decoration; the
+  // decoration is the authoritative signal, so it must win over the sampled-image path.
+  SpvBuilder b;
+  b.op(OpTypeImage, {1, 1, 2 /*Dim2D*/, 1, 0, 0, 1 /*sampled*/, 0});
+  b.op(OpTypePointer, {2, SCUniformConstant, 1});
+  b.op(OpVariable, {2, 10, SCUniformConstant});
+  b.annot(OpDecorate, {10, DecBinding, 0});
+  b.annot(OpDecorate, {10, DecInputAttachmentIndex, 1});
+  const auto words = b.words();
+  auto r = csrun::reflectSpirvModule(words, SpirvReflectStage::Fragment);
+  ASSERT_TRUE(r.hasValue());
+  ASSERT_EQ(r.value().descriptors.size(), 1u);
+  EXPECT_EQ(r.value().descriptors[0].kind, SpirvDescriptorKind::InputAttachment);
+  EXPECT_EQ(r.value().descriptors[0].inputAttachmentIndex, 1u);
 }
 
 TEST(SpirvReflectTest, RuntimeArrayMarksDescriptorIndexing) {
@@ -655,5 +688,6 @@ TEST(SpirvReflectTest, ToStringCoversEveryKind) {
   EXPECT_EQ(csrun::toString(SpirvDescriptorKind::SampledImage), "sampled_image");
   EXPECT_EQ(csrun::toString(SpirvDescriptorKind::Sampler), "sampler");
   EXPECT_EQ(csrun::toString(SpirvDescriptorKind::StorageImage), "storage_image");
+  EXPECT_EQ(csrun::toString(SpirvDescriptorKind::InputAttachment), "input_attachment");
   EXPECT_EQ(csrun::toString(SpirvDescriptorKind::Unknown), "unknown");
 }

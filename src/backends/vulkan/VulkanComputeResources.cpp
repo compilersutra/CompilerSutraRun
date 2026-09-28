@@ -142,6 +142,13 @@ Expected<void> vulkanRunComputeGeneric(VkPhysicalDevice physical, VkDevice devic
                          "compute generic smoke does not bind sampled images yet (set=" +
                              std::to_string(b.set) + " binding=" + std::to_string(b.binding) + ")");
     }
+    if (b.kind == SpirvDescriptorKind::InputAttachment) {
+      // A compute module cannot read a render pass attachment. Reject rather than let the
+      // generic path fall through to its default descriptor type.
+      return Error::make(ErrorCode::UnsupportedOperation,
+                         "input attachments are a graphics-only feature (set=" +
+                             std::to_string(b.set) + " binding=" + std::to_string(b.binding) + ")");
+    }
   }
 
   constexpr uint32_t kMaxSets = 8;

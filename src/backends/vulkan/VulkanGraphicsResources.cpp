@@ -217,6 +217,8 @@ VkDescriptorType toVk(SpirvDescriptorKind k) {
     return VK_DESCRIPTOR_TYPE_SAMPLER;
   case SpirvDescriptorKind::StorageImage:
     return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  case SpirvDescriptorKind::InputAttachment:
+    return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
   default:
     return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   }
@@ -366,10 +368,14 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
     steps.push_back("auto push constants: " + std::to_string(maxSize) + " bytes (smoke defaults)");
   }
 
-  if (refl.usesInputAttachment) {
-    vulkanDestroyGraphicsResources(device, res);
-    return Error::make(ErrorCode::UnsupportedOperation,
-                       "graphics smoke does not support input attachments / subpassInput yet");
+  // --- subpass inputs ---
+  //
+  // The views these descriptors point at are render pass attachments, which the caller
+  // creates after layout/pool/set allocation, so only the bindings are recorded here and
+  // the writes happen in vulkanWriteInputAttachmentDescriptors().
+  for (const auto &b : refl.descriptors) {
+    if (b.kind == SpirvDescriptorKind::InputAttachment)
+      res.inputAttachments.push_back(b);
   }
 
   // --- Descriptor set layouts (sets 0..maxSet, empty layouts fill gaps) ---
@@ -752,6 +758,58 @@ void vulkanDestroyGraphicsResources(VkDevice device, VulkanGraphicsResources &re
       vkDestroyDescriptorSetLayout(device, layout, nullptr);
   }
   res = VulkanGraphicsResources{};
+}
+
+Expected<void> vulkanWriteInputAttachmentDescriptors(VkDevice device, VulkanGraphicsResources &res,
+                                                     const std::vector<VkImageView> &views) {
+  if (res.inputAttachments.empty())
+    return {};
+  if (views.empty()) {
+    return Error::make(ErrorCode::UnsupportedOperation,
+                       "shader declares subpass inputs but the render pass created no input "
+                       "attachment views");
+  }
+
+  std::vector<VkDescriptorImageInfo> imgInfos;
+  std::vector<VkWriteDescriptorSet> writes;
+  // Reserve up front: VkWriteDescriptorSet::pImageInfo points into imgInfos, so a
+  // reallocation while the writes are being built leaves those pointers dangling.
+  size_t totalImages = 0;
+  for (const SpirvDescriptorBinding &b : res.inputAttachments)
+    totalImages += std::max(b.count, 1u);
+  imgInfos.reserve(totalImages);
+  for (const SpirvDescriptorBinding &b : res.inputAttachments) {
+    if (b.set >= res.descSets.size() || !res.descSets[b.set]) {
+      return Error::make(ErrorCode::UnsupportedOperation,
+                         "subpass input references set=" + std::to_string(b.set) +
+                             " binding=" + std::to_string(b.binding) + " with no descriptor set");
+    }
+    // A `subpassInput` array carries one InputAttachmentIndex for the whole array, so every
+    // element reads the same attachment. An index past the last view falls back to 0 rather
+    // than reading off the end.
+    const size_t slot = b.inputAttachmentIndex < views.size() ? b.inputAttachmentIndex : 0u;
+    const uint32_t n = std::max(b.count, 1u);
+    const size_t base = imgInfos.size();
+    for (uint32_t i = 0; i < n; ++i) {
+      VkDescriptorImageInfo ii{};
+      ii.sampler = VK_NULL_HANDLE;
+      ii.imageView = views[slot];
+      // Must match the VkAttachmentReference layout of the consuming subpass.
+      ii.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      imgInfos.push_back(ii);
+    }
+    VkWriteDescriptorSet w{};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = res.descSets[b.set];
+    w.dstBinding = b.binding;
+    w.descriptorCount = n;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+    w.pImageInfo = &imgInfos[base];
+    writes.push_back(w);
+  }
+
+  vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+  return {};
 }
 
 void vulkanCmdBindGraphicsResources(VkCommandBuffer cmd, const VulkanGraphicsResources &res) {

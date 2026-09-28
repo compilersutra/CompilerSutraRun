@@ -48,6 +48,7 @@ constexpr std::uint32_t DecBinding = 33;
 constexpr std::uint32_t DecDescriptorSet = 34;
 constexpr std::uint32_t DecOffset = 35;
 constexpr std::uint32_t DecArrayStride = 6;
+constexpr std::uint32_t DecInputAttachmentIndex = 43;
 
 // Storage classes
 constexpr std::uint32_t SCUniformConstant = 0;
@@ -97,10 +98,12 @@ struct Decor {
   bool hasBuiltIn = false;
   bool block = false;
   bool bufferBlock = false;
+  bool hasInputAttachmentIndex = false;
   std::uint32_t set = 0;
   std::uint32_t binding = 0;
   std::uint32_t location = 0;
   std::uint32_t arrayStride = 0;
+  std::uint32_t inputAttachmentIndex = 0;
 };
 
 struct MemberDecor {
@@ -268,8 +271,12 @@ SpirvDescriptorKind classifyDescriptor(const TypeInfo &pointee, const Decor &d,
   if (pointee.kind == TypeKind::Sampler)
     return SpirvDescriptorKind::Sampler;
   if (pointee.kind == TypeKind::Image) {
-    if (pointee.imageDim == DimSubpassData)
-      return SpirvDescriptorKind::Unknown; // input attachment — rejected by caller
+    // `subpassInput` is an image with Dim=SubpassData; InputAttachmentIndex says which
+    // render pass attachment it reads. The decoration is the authoritative signal (an
+    // array of subpassInputs is decorated on the variable, not per element), but the
+    // Dim alone is enough to avoid binding it as a sampled image.
+    if (pointee.imageDim == DimSubpassData || d.hasInputAttachmentIndex)
+      return SpirvDescriptorKind::InputAttachment;
     if (pointee.imageSampled == 2)
       return SpirvDescriptorKind::StorageImage;
     return SpirvDescriptorKind::SampledImage;
@@ -297,6 +304,8 @@ std::string_view toString(SpirvDescriptorKind kind) {
     return "sampler";
   case SpirvDescriptorKind::StorageImage:
     return "storage_image";
+  case SpirvDescriptorKind::InputAttachment:
+    return "input_attachment";
   default:
     return "unknown";
   }
@@ -462,6 +471,9 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
           d.set = op[3];
         } else if (dec == DecArrayStride && wc >= 4) {
           d.arrayStride = op[3];
+        } else if (dec == DecInputAttachmentIndex && wc >= 4) {
+          d.hasInputAttachmentIndex = true;
+          d.inputAttachmentIndex = op[3];
         }
       }
       break;
@@ -547,6 +559,8 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
               descPointee = et->second;
           }
           b.kind = classifyDescriptor(descPointee, d, storage);
+          if (b.kind == SpirvDescriptorKind::InputAttachment)
+            b.inputAttachmentIndex = d.inputAttachmentIndex;
           if (b.kind == SpirvDescriptorKind::UniformBuffer ||
               b.kind == SpirvDescriptorKind::StorageBuffer) {
             b.sizeBytes = typeSizeBytes(types, ptr.elemType, memberDecors);
