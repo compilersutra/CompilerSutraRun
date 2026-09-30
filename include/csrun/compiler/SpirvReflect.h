@@ -24,6 +24,8 @@ enum class SpirvDescriptorKind {
   StorageImage,
   /// `subpassInput` — read from a render pass attachment of the same index.
   InputAttachment,
+  /// Inline uniform block (`VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`).
+  InlineUniformBlock,
   Unknown,
 };
 

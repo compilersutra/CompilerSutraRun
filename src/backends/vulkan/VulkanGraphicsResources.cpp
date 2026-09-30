@@ -219,6 +219,8 @@ VkDescriptorType toVk(SpirvDescriptorKind k) {
     return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   case SpirvDescriptorKind::InputAttachment:
     return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+  case SpirvDescriptorKind::InlineUniformBlock:
+    return VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
   default:
     return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   }
@@ -369,11 +371,6 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
       if (pc.hasBufferReference)
         hasBDA = true;
     if (hasBDA) {
-      VkBufferCreateInfo bci{};
-      bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-      bci.size = 64;
-      bci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-      bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       VkBuffer bdaBuf = VK_NULL_HANDLE;
       VkDeviceMemory bdaMem = VK_NULL_HANDLE;
       void *bdaMapped = nullptr;
@@ -502,8 +499,14 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   // Pool sizes across all sets
   std::unordered_map<VkDescriptorType, uint32_t> poolCounts;
   for (const auto &setBindings : bindingsPerSet)
-    for (const auto &lb : setBindings)
-      poolCounts[lb.descriptorType] += lb.descriptorCount;
+    for (const auto &lb : setBindings) {
+      if (lb.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+        // Inline uniform block pool size is in bytes, not descriptor count.
+        poolCounts[lb.descriptorType] += lb.descriptorCount;
+      } else {
+        poolCounts[lb.descriptorType] += lb.descriptorCount;
+      }
+    }
   // Empty sets still need a pool entry for allocate; Vulkan allows maxSets with empty layouts.
   if (poolCounts.empty())
     poolCounts[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = 1;
@@ -694,6 +697,7 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   std::vector<VkWriteDescriptorSet> writes;
   std::vector<VkDescriptorBufferInfo> bufInfos;
   std::vector<VkDescriptorImageInfo> imgInfos;
+  std::vector<std::vector<std::uint8_t>> inlineUniformData;
   std::size_t imgSlots = 0;
   for (const auto &b : refl.descriptors) {
     if (b.kind == SpirvDescriptorKind::CombinedImageSampler ||
@@ -705,7 +709,63 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   writes.reserve(refl.descriptors.size());
 
   for (const auto &b : refl.descriptors) {
-    if (b.kind == SpirvDescriptorKind::UniformBuffer ||
+    if (b.kind == SpirvDescriptorKind::InlineUniformBlock ||
+        (b.kind == SpirvDescriptorKind::UniformBuffer && b.sizeBytes > 0 && b.sizeBytes <= 256)) {
+      const uint32_t n = b.sizeBytes;
+      inlineUniformData.emplace_back(n, 0);
+      auto &data = inlineUniformData.back();
+      float *f = reinterpret_cast<float *>(data.data());
+      if (!b.members.empty()) {
+        fillIdentityUbo(data.data(), n, &b.members);
+        if (n >= 64) {
+          const float aspect = 1.0f;
+          const float fov = 1.0472f;
+          const float nearZ = 0.1f;
+          const float farZ = 100.0f;
+          const float tanHalfFov = tanf(fov * 0.5f);
+          f[0] = 1.0f / (aspect * tanHalfFov);
+          f[5] = 1.0f / tanHalfFov;
+          f[10] = farZ / (nearZ - farZ);
+          f[11] = -1.0f;
+          f[14] = (nearZ * farZ) / (nearZ - farZ);
+          f[15] = 0.0f;
+        }
+        if (n >= 208) {
+          f[192 / 4 + 0] = 0.0f;
+          f[192 / 4 + 1] = 0.0f;
+          f[192 / 4 + 2] = 5.0f;
+          f[192 / 4 + 3] = 1.0f;
+        }
+      } else {
+        if (n >= 64) {
+          const float aspect = 1.0f;
+          const float fov = 1.0472f;
+          const float nearZ = 0.1f;
+          const float farZ = 100.0f;
+          const float tanHalfFov = tanf(fov * 0.5f);
+          f[0] = 1.0f / (aspect * tanHalfFov);
+          f[5] = 1.0f / tanHalfFov;
+          f[10] = farZ / (nearZ - farZ);
+          f[11] = -1.0f;
+          f[14] = (nearZ * farZ) / (nearZ - farZ);
+          f[15] = 0.0f;
+        }
+      }
+      VkWriteDescriptorSetInlineUniformBlock iub{};
+      iub.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK;
+      iub.dataSize = n;
+      iub.pData = data.data();
+      VkWriteDescriptorSet w{};
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.pNext = &iub;
+      w.dstSet = res.descSets[b.set];
+      w.dstBinding = b.binding;
+      w.descriptorCount = n;
+      w.descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+      writes.push_back(w);
+      steps.push_back("inline uniform block bound at set=" + std::to_string(b.set) +
+                      " binding=" + std::to_string(b.binding) + " (" + std::to_string(n) + " bytes)");
+    } else if (b.kind == SpirvDescriptorKind::UniformBuffer ||
         b.kind == SpirvDescriptorKind::StorageBuffer) {
       const VkDeviceSize sz = std::max<std::uint32_t>(b.sizeBytes, 64);
       VkBuffer buf = VK_NULL_HANDLE;
