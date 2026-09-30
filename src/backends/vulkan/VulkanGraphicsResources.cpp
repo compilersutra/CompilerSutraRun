@@ -452,7 +452,10 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
     VkDescriptorSetLayoutBinding lb{};
     lb.binding = b.binding;
     lb.descriptorType = toVk(b.kind);
-    lb.descriptorCount = b.count;
+    // An inline uniform block's descriptorCount is its size in bytes, not the number of
+    // descriptors. Getting this wrong makes the layout and the write disagree.
+    lb.descriptorCount = (b.kind == SpirvDescriptorKind::InlineUniformBlock) ? b.sizeBytes
+                                                                             : b.count;
     lb.stageFlags = stageFlags(b);
     bindingsPerSet[b.set].push_back(lb);
   }
@@ -505,8 +508,7 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
         poolCounts[lb.descriptorType] += lb.descriptorCount;
       } else {
         poolCounts[lb.descriptorType] += lb.descriptorCount;
-      }
-    }
+      }    }
   // Empty sets still need a pool entry for allocate; Vulkan allows maxSets with empty layouts.
   if (poolCounts.empty())
     poolCounts[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = 1;
