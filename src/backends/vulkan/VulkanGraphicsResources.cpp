@@ -709,8 +709,7 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   writes.reserve(refl.descriptors.size());
 
   for (const auto &b : refl.descriptors) {
-    if (b.kind == SpirvDescriptorKind::InlineUniformBlock ||
-        (b.kind == SpirvDescriptorKind::UniformBuffer && b.sizeBytes > 0 && b.sizeBytes <= 256)) {
+    if (b.kind == SpirvDescriptorKind::InlineUniformBlock) {
       const uint32_t n = b.sizeBytes;
       inlineUniformData.emplace_back(n, 0);
       auto &data = inlineUniformData.back();

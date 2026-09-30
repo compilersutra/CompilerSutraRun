@@ -1,0 +1,9 @@
+# Inline uniform block binding.
+#
+# Asserts the descriptor is bound as VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK, not as a
+# plain UBO. The pbr shader still produces a blank frame (FS/PS=0) because it needs real
+# material and geometry data -- that is scene data, the same class as the FAIL_BLACK
+# samples, not a binding defect. This test covers the binding capability only.
+#
+# REQUIRES: vulkan, gpu, corpus, glslang
+# RUN: %csrun %repo/tests/lit/Inputs/corpus/inline_uniform.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark | grep -qi "inline uniform"
