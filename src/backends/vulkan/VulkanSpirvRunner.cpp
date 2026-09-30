@@ -310,6 +310,22 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   if (wantBDA)
     enabledBDAFeatures.bufferDeviceAddress = VK_TRUE;
 
+  // Probe inline-uniform-block feature (VK_EXT_inline_uniform_block).
+  VkPhysicalDeviceInlineUniformBlockFeatures enabledInlineFeatures{};
+  enabledInlineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INLINE_UNIFORM_BLOCK_FEATURES;
+  {
+    VkPhysicalDeviceFeatures2 inlineProbe{};
+    inlineProbe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    inlineProbe.pNext = &enabledInlineFeatures;
+    vkGetPhysicalDeviceFeatures2(physical, &inlineProbe);
+  }
+  const bool wantInlineUniform = enabledInlineFeatures.inlineUniformBlock == VK_TRUE;
+  if (wantInlineUniform) {
+    enabledInlineFeatures.inlineUniformBlock = VK_TRUE;
+    enabledInlineFeatures.descriptorBindingInlineUniformBlockUpdateAfterBind = VK_TRUE;
+    deviceExts.push_back(VK_EXT_INLINE_UNIFORM_BLOCK_EXTENSION_NAME);
+  }
+
   VkPhysicalDevicePerformanceQueryFeaturesKHR enabledPerfFeatures = perfSetup.features;
   VkPhysicalDeviceFeatures2 features2{};
   features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -321,7 +337,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   dci.ppEnabledExtensionNames = deviceExts.empty() ? nullptr : deviceExts.data();
-  // Chain: features2 → [bda] → [mesh] → [indexing] → [perf]
+  // Chain: features2 → [bda] → [inline] → [mesh] → [indexing] → [perf]
   void *chain = nullptr;
   if (perfSetup.want) {
     enabledPerfFeatures.pNext = chain;
@@ -335,11 +351,15 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     enabledMeshFeatures.pNext = chain;
     chain = &enabledMeshFeatures;
   }
+  if (wantInlineUniform) {
+    enabledInlineFeatures.pNext = chain;
+    chain = &enabledInlineFeatures;
+  }
   if (wantBDA) {
     enabledBDAFeatures.pNext = chain;
     chain = &enabledBDAFeatures;
   }
-  if (chain || perfSetup.want || wantIndexing || wantMesh || wantBDA) {
+  if (chain || perfSetup.want || wantIndexing || wantMesh || wantBDA || wantInlineUniform) {
     features2.pNext = chain;
     dci.pNext = &features2;
     dci.pEnabledFeatures = nullptr;

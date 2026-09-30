@@ -591,9 +591,15 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
               descPointee = et->second;
           }
           b.kind = classifyDescriptor(descPointee, d, storage);
+          if (b.kind == SpirvDescriptorKind::UniformBuffer) {
+            const uint32_t sz = typeSizeBytes(types, ptr.elemType, memberDecors);
+            if (sz > 0 && sz <= 256)
+              b.kind = SpirvDescriptorKind::InlineUniformBlock;
+          }
           if (b.kind == SpirvDescriptorKind::InputAttachment)
             b.inputAttachmentIndex = d.inputAttachmentIndex;
           if (b.kind == SpirvDescriptorKind::UniformBuffer ||
+              b.kind == SpirvDescriptorKind::InlineUniformBlock ||
               b.kind == SpirvDescriptorKind::StorageBuffer) {
             b.sizeBytes = typeSizeBytes(types, ptr.elemType, memberDecors);
             if (b.sizeBytes == 0)

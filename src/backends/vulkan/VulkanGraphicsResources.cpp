@@ -503,18 +503,20 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   std::unordered_map<VkDescriptorType, uint32_t> poolCounts;
   for (const auto &setBindings : bindingsPerSet)
     for (const auto &lb : setBindings) {
-      if (lb.descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-        // Inline uniform block pool size is in bytes, not descriptor count.
-        poolCounts[lb.descriptorType] += lb.descriptorCount;
-      } else {
-        poolCounts[lb.descriptorType] += lb.descriptorCount;
-      }    }
+      poolCounts[lb.descriptorType] += lb.descriptorCount;
+    }
   // Empty sets still need a pool entry for allocate; Vulkan allows maxSets with empty layouts.
   if (poolCounts.empty())
     poolCounts[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = 1;
   std::vector<VkDescriptorPoolSize> poolSizes;
-  for (const auto &kv : poolCounts)
-    poolSizes.push_back(VkDescriptorPoolSize{kv.first, std::max(kv.second, 1u)});
+  for (const auto &kv : poolCounts) {
+    // VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK pool size is in bytes, not descriptor count.
+    // Other descriptor types use descriptor count.
+    uint32_t poolSize = (kv.first == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+                            ? std::max(kv.second, 1u)
+                            : std::max(kv.second, 1u);
+    poolSizes.push_back(VkDescriptorPoolSize{kv.first, poolSize});
+  }
 
   VkDescriptorPoolCreateInfo dpci{};
   dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -711,7 +713,8 @@ vulkanCreateGraphicsResources(VkPhysicalDevice physical, VkDevice device, VkQueu
   writes.reserve(refl.descriptors.size());
 
   for (const auto &b : refl.descriptors) {
-    if (b.kind == SpirvDescriptorKind::InlineUniformBlock) {
+    if (b.kind == SpirvDescriptorKind::InlineUniformBlock ||
+        (b.kind == SpirvDescriptorKind::UniformBuffer && b.sizeBytes > 0 && b.sizeBytes <= 256)) {
       const uint32_t n = b.sizeBytes;
       inlineUniformData.emplace_back(n, 0);
       auto &data = inlineUniformData.back();
