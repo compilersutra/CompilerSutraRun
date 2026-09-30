@@ -56,7 +56,7 @@ Prefer a **Vulkan sample that hard-fails** for `todo/`. Prefer a **bench YAML** 
 |--------|--------------------|
 | `buffer_device_address` | BDA + address push constants — **implemented** (`306a052`), pending promotion |
 | `indirect_draw` | `vkCmdDrawIndirect` |
-| `inline_uniform` | inline uniform blocks |
+| `inline_uniform` | inline uniform blocks — blocked: no SPIR-V signal (identical to a UBO) and `maxInlineUniformBlockSize=0` on the RADV devices here |
 | `ray_query` | ray query / AS |
 | `spherical_env` | env-map / UBO fill (black draw) |
 | `gears` | real model/camera data (black draw) |
