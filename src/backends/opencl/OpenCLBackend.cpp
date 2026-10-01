@@ -1,5 +1,6 @@
 #include "csrun/backends/opencl/OpenCLBackend.h"
 
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
@@ -231,6 +232,8 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
 
+  PowerSampler power;
+
   auto dispatchOnce = [&]() -> Expected<double> {
     const auto t0 = std::chrono::steady_clock::now();
     cl_int e =
@@ -290,6 +293,7 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   RunResult result =
       fillVectorAddResult(workload, report, BackendType::OpenCL, "opencl-online-compiler", options,
                           samples, TimingSource::CpuWall, host.reference, host.output);
+  result.power = power.stats();
   cleanup();
   logInfo("runtime", "OpenCL vector_add completed on " + result.deviceName);
   return result;

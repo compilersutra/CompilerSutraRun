@@ -9,6 +9,7 @@
 
 #include "csrun/benchmark/Timing.h"
 #include "csrun/benchmark/PipelineStats.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/benchmark/VendorCountersMode.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Expected.h"
@@ -71,6 +72,7 @@ struct VulkanSmokeResult {
   std::vector<double> samplesMs;
   TimingSource timingSource = TimingSource::Unknown;
   PipelineStats counters;
+  PowerStats power;
   bool pixelChecked = false;
   bool computeChecked = false;
   std::uint8_t centerR = 0;

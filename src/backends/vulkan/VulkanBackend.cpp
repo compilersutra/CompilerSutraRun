@@ -8,6 +8,7 @@
 #include "csrun/backends/vulkan/VulkanSpirvRunner.h"
 #include "csrun/benchmark/Statistics.h"
 #include "csrun/benchmark/PipelineStats.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
 #include "csrun/core/Process.h"
@@ -229,6 +230,7 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
       result.timing.source = TimingSource::CpuWall;
     result.validation =
         traced.value().ok ? ValidationStatus::Passed : ValidationStatus::Failed;
+    result.power = traced.value().power;
     result.note = note.str() + "mode=" + traced.value().mode +
                   (traced.value().ok ? " PASS (vkCmdTraceRaysKHR + pixel readback)\n"
                                      : " FAIL (ray tracing output is black)\n");
@@ -262,6 +264,7 @@ Expected<RunResult> executeHandwrittenSpirv(const Workload &workload, const Devi
     result.timing.maxMs = loaded.value().hostMs;
   }
   result.counters = loaded.value().counters;
+  result.power = loaded.value().power;
   result.note = note.str();
   if (!loaded.value().ok) {
     result.validation = ValidationStatus::Failed;
@@ -845,6 +848,10 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
     return iterCounters.hostSubmitMs;
   };
 
+  // Power sampling covers warmup + timed iterations so the measurement reflects
+  // sustained load, not just the last iteration.
+  PowerSampler power;
+
   // Warmup
   for (int i = 0; i < warmupIters; ++i) {
     auto w = recordAndSubmit(false, false);
@@ -889,8 +896,9 @@ Expected<RunResult> VulkanBackend::execute(const Workload &workload,
   }
 
   RunResult result = fillVectorAddResult(workload, device, BackendType::Vulkan, "glslangValidator",
-                                         options, samples, timingSource, host.reference, host.output);
+                                          options, samples, timingSource, host.reference, host.output);
   result.counters = pipeCounters;
+  result.power = power.stats();
   if (pipeCounters.available)
     result.note = (result.note.empty() ? "" : result.note + "\n") + pipeCounters.summaryLine();
   if (!pipeCounters.vendor.empty() || !pipeCounters.vendorNote.empty()) {

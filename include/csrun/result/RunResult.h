@@ -7,6 +7,7 @@
 
 #include "csrun/backend/BackendType.h"
 #include "csrun/benchmark/PipelineStats.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/benchmark/Timing.h"
 #include "csrun/core/Expected.h"
 
@@ -29,6 +30,7 @@ struct RunResult {
   int iterations = 0;
   TimingStats timing;
   PipelineStats counters;
+  PowerStats power;
   ValidationStatus validation = ValidationStatus::NotRun;
   std::string note;
 };

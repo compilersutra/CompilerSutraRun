@@ -37,6 +37,12 @@ void printTextResult(const csrun::RunResult &r) {
   std::cout << "Compiler:    " << r.compilerName << '\n';
   std::cout << "Timing:      median=" << r.timing.medianMs << " ms"
             << " source=" << csrun::toString(r.timing.source) << '\n';
+  if (r.power.available)
+    std::cout << "Power:       avg=" << r.power.avgWatts << " W"
+              << " min=" << r.power.minWatts << " W"
+              << " max=" << r.power.maxWatts << " W"
+              << " energy=" << r.power.energyJoules << " J"
+              << " source=" << r.power.source << " (" << r.power.device << ")\n";
   if (r.counters.available || r.counters.occlusionAvailable || r.counters.gpuTimestampAvailable ||
       r.counters.hostRecordMs > 0.0 || r.counters.hostSubmitMs > 0.0 ||
       r.counters.hostQueueWaitMs > 0.0 || !r.counters.vendor.empty() ||

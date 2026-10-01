@@ -83,7 +83,8 @@ target_include_directories(csrun_result PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 add_library(csrun_benchmark
   src/benchmark/Statistics.cpp
   src/benchmark/Timing.cpp
-  src/benchmark/PipelineStats.cpp)
+  src/benchmark/PipelineStats.cpp
+  src/benchmark/PowerSampler.cpp)
 target_link_libraries(csrun_benchmark PUBLIC csrun_core)
 target_include_directories(csrun_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

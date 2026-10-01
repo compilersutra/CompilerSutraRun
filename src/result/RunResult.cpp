@@ -149,6 +149,20 @@ Expected<std::string> JsonWriter::write(const RunResult &result) {
         {"overdraw_estimate", c.overdrawEstimate()},
     };
   }
+  if (result.power.available) {
+    j["power"] = {
+        {"source", result.power.source},
+        {"device", result.power.device},
+        {"samples", result.power.samples},
+        {"duration_ms", result.power.durationMs},
+        {"avg_watts", result.power.avgWatts},
+        {"min_watts", result.power.minWatts},
+        {"max_watts", result.power.maxWatts},
+        {"energy_joules", result.power.energyJoules},
+    };
+    if (!result.power.note.empty())
+      j["power"]["note"] = result.power.note;
+  }
   j["validation"] = {
       {"status", std::string(toString(result.validation))},
   };

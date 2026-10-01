@@ -7,6 +7,7 @@
 #include "csrun/backends/vulkan/VulkanRayTracingSmoke.h"
 
 #include "csrun/backends/vulkan/VulkanDevicePick.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
 #include "csrun/validation/FrameCheck.h"
@@ -163,6 +164,8 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
   VulkanSmokeResult out;
   out.mode = "ray_tracing_offscreen";
   auto &steps = out.steps;
+
+  PowerSampler power;
   const uint32_t width = std::max(1u, req.width);
   const uint32_t height = std::max(1u, req.height);
 
@@ -1010,6 +1013,7 @@ Expected<VulkanSmokeResult> vulkanRayTracingSmoke(const VulkanRayTracingRequest 
   cleanup();
   logInfo("runtime", "Vulkan ray tracing smoke " + std::string(out.ok ? "OK" : "FAIL") +
                          " on " + out.deviceName);
+  out.power = power.stats();
   return out;
 }
 

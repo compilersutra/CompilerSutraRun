@@ -6,6 +6,7 @@
 #include "csrun/backends/vulkan/VulkanPerfQuery.h"
 #include "csrun/backends/vulkan/VulkanPipelineQueries.h"
 #include "csrun/backends/vulkan/VulkanWsiPresenter.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/compiler/SpirvReflect.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
@@ -105,6 +106,10 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
 
   VulkanSmokeResult out;
   auto &steps = out.steps;
+
+  // Power sampling starts before any warmup loop and covers every exit path
+  // via the guard's destructor.
+  PowerSampler power;
 
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -420,6 +425,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         vkGetPhysicalDeviceProperties(physical, &props);
         out.deviceName = props.deviceName;
         cleanup();
+        out.power = power.stats();
         return out;
       }
     }
@@ -997,6 +1003,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       out.counters = presented.value().counters;
       logInfo("runtime", "Vulkan SPIR-V " + out.mode + (out.ok ? " OK" : " FAIL") + " on " +
                              out.deviceName + " (executed)");
+      out.power = power.stats();
       return out;
     }
 
@@ -2228,6 +2235,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   steps.push_back("vkDestroyDevice + vkDestroyInstance");
   logInfo("runtime", "Vulkan SPIR-V " + out.mode + (out.ok ? " OK" : " FAIL") + " on " +
                          out.deviceName + (out.executed ? " (executed)" : ""));
+  out.power = power.stats();
   return out;
 }
 
