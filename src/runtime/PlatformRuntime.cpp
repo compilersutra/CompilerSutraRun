@@ -60,7 +60,10 @@ Expected<RunResult> PlatformRuntime::run(const Workload &workload,
   if (!backend)
     return Error::make(ErrorCode::BackendUnavailable, "selected backend missing from registry");
 
-  return backend->execute(workload, selection.value().device, options);
+  auto result = backend->execute(workload, selection.value().device, options);
+  if (result)
+    result.value().environment = gatherEnvironmentInfo();
+  return result;
 }
 
 Expected<std::vector<RunResult>> PlatformRuntime::runAll(const Workload &workload,

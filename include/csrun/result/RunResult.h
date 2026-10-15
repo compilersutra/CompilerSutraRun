@@ -17,8 +17,16 @@ namespace csrun {
 
 enum class ValidationStatus { NotRun, Passed, Failed, Skipped };
 
+struct EnvironmentInfo {
+  std::string kernelVersion;
+  std::string cpuModel;
+  std::string gpuDriverVersion;
+  std::string gpuClocks;
+  std::string csrunVersion;
+};
+
 struct RunResult {
-  int schemaVersion = 2;
+  int schemaVersion = 3;
   std::string workloadName;
   std::string operation;
   BackendType backend{};
@@ -31,9 +39,12 @@ struct RunResult {
   TimingStats timing;
   PipelineStats counters;
   PowerStats power;
+  EnvironmentInfo environment;
   ValidationStatus validation = ValidationStatus::NotRun;
   std::string note;
 };
+
+EnvironmentInfo gatherEnvironmentInfo();
 
 class JsonWriter {
 public:

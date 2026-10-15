@@ -519,8 +519,16 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
         if (tit == types.end() || tit->second.kind != TypeKind::Pointer)
           break;
         const TypeInfo &ptr = tit->second;
-        const Decor &d = decors[resultId];
+        Decor d = decors[resultId];
         const TypeInfo pointee = unwrapPointer(types, resultType);
+        if (pointee.kind == TypeKind::Struct) {
+          auto sit = decors.find(ptr.elemType);
+          if (sit != decors.end()) {
+            const Decor &sd = sit->second;
+            d.block = d.block || sd.block;
+            d.bufferBlock = d.bufferBlock || sd.bufferBlock;
+          }
+        }
 
         if (storage == SCOutput && isFragment && d.hasLocation && !d.hasBuiltIn) {
           out.colorOutputCount = std::max(out.colorOutputCount, d.location + 1);
@@ -591,11 +599,6 @@ Expected<SpirvModuleReflection> reflectSpirvModule(const std::vector<std::uint32
               descPointee = et->second;
           }
           b.kind = classifyDescriptor(descPointee, d, storage);
-          if (b.kind == SpirvDescriptorKind::UniformBuffer) {
-            const uint32_t sz = typeSizeBytes(types, ptr.elemType, memberDecors);
-            if (sz > 0 && sz <= 256)
-              b.kind = SpirvDescriptorKind::InlineUniformBlock;
-          }
           if (b.kind == SpirvDescriptorKind::InputAttachment)
             b.inputAttachmentIndex = d.inputAttachmentIndex;
           if (b.kind == SpirvDescriptorKind::UniformBuffer ||

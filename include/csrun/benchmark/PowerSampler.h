@@ -26,6 +26,9 @@ struct PowerStats {
   double minWatts = 0.0;
   double maxWatts = 0.0;
   double energyJoules = 0.0; // trapezoidal integral of power over the region
+  double idleWatts = 0.0;    // measured before warmup; subtracted from avg
+  double activeAvgWatts = 0.0; // avgWatts - idleWatts
+  double energyActiveJoules = 0.0; // energy attributable to the workload
   std::string note;
 };
 
@@ -61,6 +64,7 @@ private:
   double intervalMs_ = 5.0;
   mutable std::mutex mutex_;
   std::vector<Sample> samples_;
+  double idleWatts_ = 0.0;
   std::thread thread_;
 };
 

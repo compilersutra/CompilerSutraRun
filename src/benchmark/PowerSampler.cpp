@@ -78,6 +78,13 @@ PowerSampler::PowerSampler() {
   probe();
   if (!available_)
     return;
+  // Measure idle power before the workload starts; stats() subtracts this.
+  sampleOnce();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!samples_.empty())
+      idleWatts_ = samples_.front().watts;
+  }
   // Synchronous first sample so even sub-millisecond regions have a reading.
   sampleOnce();
   thread_ = std::thread([this] { pollLoop(); });
@@ -220,12 +227,17 @@ PowerStats PowerSampler::stats() const {
     out.maxWatts = std::max(out.maxWatts, s.watts);
   }
   out.avgWatts = sum / static_cast<double>(copy.size());
+  out.idleWatts = idleWatts_;
+  out.activeAvgWatts = out.avgWatts - idleWatts_;
   // Trapezoidal integration for energy.
   double energy = 0.0;
+  double activeEnergy = 0.0;
   for (std::size_t i = 1; i < copy.size(); ++i) {
     const double dt = (copy[i].timestampMs - copy[i - 1].timestampMs) / 1.0e3;
     energy += 0.5 * (copy[i].watts + copy[i - 1].watts) * dt;
+    activeEnergy += 0.5 * ((copy[i].watts - idleWatts_) + (copy[i - 1].watts - idleWatts_)) * dt;
   }
+  out.energyActiveJoules = activeEnergy;
   out.energyJoules = energy;
   return out;
 }

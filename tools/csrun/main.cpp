@@ -39,9 +39,10 @@ void printTextResult(const csrun::RunResult &r) {
             << " source=" << csrun::toString(r.timing.source) << '\n';
   if (r.power.available)
     std::cout << "Power:       avg=" << r.power.avgWatts << " W"
-              << " min=" << r.power.minWatts << " W"
-              << " max=" << r.power.maxWatts << " W"
+              << " idle=" << r.power.idleWatts << " W"
+              << " active_avg=" << r.power.activeAvgWatts << " W"
               << " energy=" << r.power.energyJoules << " J"
+              << " active_energy=" << r.power.energyActiveJoules << " J"
               << " source=" << r.power.source << " (" << r.power.device << ")\n";
   if (r.counters.available || r.counters.occlusionAvailable || r.counters.gpuTimestampAvailable ||
       r.counters.hostRecordMs > 0.0 || r.counters.hostSubmitMs > 0.0 ||
