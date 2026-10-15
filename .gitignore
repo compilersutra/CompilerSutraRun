@@ -32,3 +32,5 @@ compile_flags.txt
 # Regenerate with: vulkaninfo --json > VP_VULKANINFO_<device>.json
 VP_VULKANINFO*.json
 vulkaninfo*.json
+*.spv
+*.ppm

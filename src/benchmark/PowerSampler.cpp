@@ -78,12 +78,21 @@ PowerSampler::PowerSampler() {
   probe();
   if (!available_)
     return;
-  // Measure idle power before the workload starts; stats() subtracts this.
-  sampleOnce();
+  // Measure idle power before the workload starts. Take several samples over a
+  // short window and use the minimum — a single reading can catch a transient
+  // spike from a previous workload still draining.
+  for (int i = 0; i < 10; ++i) {
+    sampleOnce();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!samples_.empty())
-      idleWatts_ = samples_.front().watts;
+    if (!samples_.empty()) {
+      double minW = samples_.front().watts;
+      for (const auto &s : samples_)
+        minW = std::min(minW, s.watts);
+      idleWatts_ = minW;
+    }
   }
   // Synchronous first sample so even sub-millisecond regions have a reading.
   sampleOnce();

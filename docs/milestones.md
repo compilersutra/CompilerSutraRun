@@ -197,7 +197,7 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
 
-Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **83 PASS / 12 FAIL / 0 SKIP**
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **84 PASS / 11 FAIL / 0 SKIP**
 of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
 
 | Gap | Samples | Root cause |
@@ -228,6 +228,12 @@ passes with `OCCLUSION=1352` and `frame check: coverage 33.008%, 252 distinct co
 pre-filled `VkDrawIndirectCommand` buffer, so the indirect draw path is exercised for every
 graphics workload. The `indirectdraw` sample passes with `OCCLUSION=340` and
 `frame check: coverage 8.301%, 1 distinct colours, stable`.
+
+`inline_uniform` is now supported: `SpirvReflect` classifies small uniform blocks (≤256 bytes)
+as `InlineUniformBlock`, and the smoke path binds them with
+`VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK` via `VkWriteDescriptorSetInlineUniformBlock`.
+The `pbr` sample passes with `OCCLUSION=1352` and
+`frame check: coverage 22.437%, 11 distinct colours, stable`.
 
 `subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
 and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,
