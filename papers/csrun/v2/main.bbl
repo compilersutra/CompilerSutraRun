@@ -1,0 +1,117 @@
+\begin{thebibliography}{15}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{AMD}(2025{\natexlab{a}})]{hipdocs}
+{AMD}.
+\newblock {HIP} programming guide.
+\newblock \url{https://rocm.docs.amd.com/projects/HIP/}, 2025{\natexlab{a}}.
+\newblock ROCm documentation; accessed 2026-10-17.
+
+\bibitem[{AMD}(2025{\natexlab{b}})]{rocprof}
+{AMD}.
+\newblock {ROCprofiler} / {rocprof} documentation.
+\newblock \url{https://rocm.docs.amd.com/projects/rocprofiler/},
+  2025{\natexlab{b}}.
+\newblock Accessed 2026-10-20.
+
+\bibitem[Che et~al.(2009)Che, Boyer, Meng, Tarjan, Sheaffer, Lee, and
+  Skadron]{che2009rodinia}
+Shuai Che, Michael Boyer, Jiayuan Meng, David Tarjan, Jeremy~W. Sheaffer,
+  Sang-Ha Lee, and Kevin Skadron.
+\newblock Rodinia: A benchmark suite for heterogeneous computing.
+\newblock In \emph{Proceedings of the IEEE International Symposium on Workload
+  Characterization (IISWC)}, pages 44--54. IEEE, 2009.
+\newblock \doi{10.1109/IISWC.2009.5306797}.
+
+\bibitem[Danalis et~al.(2010)Danalis, Marin, McCurdy, Meredith, Roth, Spafford,
+  Tipparaju, and Vetter]{danalis2010shoc}
+Anthony Danalis, Gabriel Marin, Collin McCurdy, Jeremy~S. Meredith, Philip~C.
+  Roth, Kyle Spafford, Vinod Tipparaju, and Jeffrey~S. Vetter.
+\newblock The scalable heterogeneous computing ({SHOC}) benchmark suite.
+\newblock In \emph{Proceedings of the 3rd Workshop on General-Purpose
+  Computation on Graphics Processing Units (GPGPU)}, pages 63--74. ACM, 2010.
+\newblock \doi{10.1145/1735688.1735702}.
+
+\bibitem[{Khronos Group}(2013)]{opengl43}
+{Khronos Group}.
+\newblock The {OpenGL} graphics system: A specification (version 4.3).
+\newblock \url{https://registry.khronos.org/OpenGL/specs/gl/glspec43.core.pdf},
+  2013.
+\newblock Accessed 2026-10-17.
+
+\bibitem[{Khronos Group}(2020)]{sycl2020}
+{Khronos Group}.
+\newblock {SYCL} 2020 specification.
+\newblock \url{https://www.khronos.org/sycl/}, 2020.
+\newblock Accessed 2026-10-20.
+
+\bibitem[{Khronos Group}(2024)]{opencl30}
+{Khronos Group}.
+\newblock The {OpenCL} specification, version 3.0.
+\newblock \url{https://registry.khronos.org/OpenCL/}, 2024.
+\newblock Accessed 2026-10-17.
+
+\bibitem[{Khronos Group}(2025)]{vulkan14}
+{Khronos Group}.
+\newblock Vulkan {1.4} --- a specification.
+\newblock
+  \url{https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html},
+  2025.
+\newblock Accessed 2026-10-17.
+
+\bibitem[Konstantinidis and Cotronis(2015)]{konstantinidis2015mixbench}
+Elias Konstantinidis and Yiannis Cotronis.
+\newblock A practical performance model for compute and memory bound {GPU}
+  kernels.
+\newblock In \emph{Proceedings of the 23rd Euromicro International Conference
+  on Parallel, Distributed, and Network-Based Processing (PDP)}, pages
+  651--658. IEEE, 2015.
+\newblock \doi{10.1109/PDP.2015.51}.
+
+\bibitem[Lattner and Adve(2004)]{lattner2004llvm}
+Chris Lattner and Vikram Adve.
+\newblock {LLVM}: A compilation framework for lifelong program analysis \&
+  transformation.
+\newblock In \emph{Proceedings of the International Symposium on Code
+  Generation and Optimization (CGO)}, pages 75--86. IEEE, 2004.
+\newblock \doi{10.1109/CGO.2004.1281665}.
+
+\bibitem[Lattner et~al.(2020)Lattner, Amini, Bondhugula, Cohen, Davis, Pienaar,
+  Riddle, Shpeisman, Vasilache, and Zinenko]{lattner2020mlir}
+Chris Lattner, Mehdi Amini, Uday Bondhugula, Albert Cohen, Andy Davis, Jacques
+  Pienaar, River Riddle, Tatiana Shpeisman, Nicolas Vasilache, and Oleksandr
+  Zinenko.
+\newblock {MLIR}: A compiler infrastructure for the end of {Moore}'s law.
+\newblock \emph{arXiv preprint arXiv:2002.11054}, 2020.
+
+\bibitem[{NVIDIA}(2025)]{nsight}
+{NVIDIA}.
+\newblock {Nsight} compute / systems documentation.
+\newblock \url{https://developer.nvidia.com/nsight-compute}, 2025.
+\newblock Accessed 2026-10-20.
+
+\bibitem[Raj and contributors(2026)]{clpeak2026}
+Krishnaraj Raj and contributors.
+\newblock clpeak: Peak compute, bandwidth, and latency across {GPU} {APIs}.
+\newblock \url{https://github.com/krrishnarraj/clpeak}, 2026.
+\newblock Accessed 2026-10-17.
+
+\bibitem[Tolmachev(2021)]{vkfft2021}
+Dmitrii Tolmachev.
+\newblock {VkFFT} --- a fast fourier transform library for
+  {Vulkan}/{CUDA}/{HIP}/{OpenCL}/{Level Zero}.
+\newblock \url{https://github.com/DTolm/VkFFT}, 2021.
+\newblock Accessed 2026-10-17.
+
+\bibitem[Trott et~al.(2022)]{trott2022kokkos}
+Christian~R. Trott et~al.
+\newblock {Kokkos} 3: Programming model extensions for the exascale era.
+\newblock \emph{IEEE Transactions on Parallel and Distributed Systems},
+  33\penalty0 (4):\penalty0 805--817, 2022.
+\newblock \doi{10.1109/TPDS.2021.3097283}.
+
+\end{thebibliography}

@@ -60,7 +60,35 @@ Expected<RunResult> PlatformRuntime::run(const Workload &workload,
   if (!backend)
     return Error::make(ErrorCode::BackendUnavailable, "selected backend missing from registry");
 
-  auto result = backend->execute(workload, selection.value().device, options);
+  DeviceInfo device = selection.value().device;
+  // --device-index must override selector auto-pick (otherwise HIP/OpenCL/Vulkan
+  // always run the score-sorted first device and dual-GPU hosts cannot be validated).
+  if (options.deviceIndex.has_value()) {
+    auto devices = backend->enumerateDevices();
+    if (!devices)
+      return devices.error();
+    bool found = false;
+    for (const auto &d : devices.value()) {
+      if (d.index == *options.deviceIndex) {
+        device = d;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      Error e = Error::make(ErrorCode::DeviceNotFound,
+                            "device index " + std::to_string(*options.deviceIndex) +
+                                " not found for backend " +
+                                std::string(toString(selection.value().backend)) +
+                                " (see --list-devices)");
+      e.backend = std::string(toString(selection.value().backend));
+      return e;
+    }
+    logInfo("backend", "forced device-index " + std::to_string(*options.deviceIndex) +
+                           " -> " + device.name);
+  }
+
+  auto result = backend->execute(workload, device, options);
   if (result)
     result.value().environment = gatherEnvironmentInfo();
   return result;

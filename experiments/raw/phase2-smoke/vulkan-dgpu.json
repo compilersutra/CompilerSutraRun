@@ -1,0 +1,131 @@
+{
+  "backend": {
+    "name": "vulkan"
+  },
+  "compiler": {
+    "name": "glslangValidator"
+  },
+  "counters": {
+    "clip_invocations": 0,
+    "clip_primitives": 0,
+    "cs_invocations": 1048576,
+    "derived": {
+      "clip_reject_ratio": 0.0,
+      "fs_per_primitive": 0.0,
+      "fs_per_vs": 0.0,
+      "overdraw_estimate": 0.0
+    },
+    "fs_invocations": 0,
+    "fs_per_primitive": 0.0,
+    "fs_per_vs": 0.0,
+    "gpu_elapsed_ms": 0.38874,
+    "gpu_stages": {
+      "available": true,
+      "color_to_bottom_ms": 0.0,
+      "cs_to_bottom_ms": 0.00084,
+      "fs_to_color_ms": 0.0,
+      "kind": "compute",
+      "top_to_cs_ms": 0.38788,
+      "top_to_vs_ms": 0.0,
+      "total_ms": 0.38874,
+      "vs_to_fs_ms": 0.0
+    },
+    "gpu_timing": {
+      "available": true,
+      "elapsed_ms": 0.38874
+    },
+    "host": {
+      "d2h_ms": 13.828306,
+      "h2d_ms": 0.929934,
+      "queue_wait_ms": 0.5341910000000001,
+      "record_ms": 0.00038,
+      "submit_ms": 0.00464
+    },
+    "host_d2h_ms": 13.828306,
+    "host_h2d_ms": 0.929934,
+    "host_queue_wait_ms": 0.5341910000000001,
+    "host_record_ms": 0.00038,
+    "host_submit_ms": 0.00464,
+    "ia_primitives": 0,
+    "ia_vertices": 0,
+    "occlusion": {
+      "available": false,
+      "samples_passed": 0
+    },
+    "occlusion_samples_passed": 0,
+    "overdraw_estimate": 0.0,
+    "pipeline_statistics": {
+      "available": true,
+      "clip_invocations": 0,
+      "clip_primitives": 0,
+      "cs_invocations": 1048576,
+      "fs_invocations": 0,
+      "gs_invocations": 0,
+      "gs_primitives": 0,
+      "ia_primitives": 0,
+      "ia_vertices": 0,
+      "ps_invocations": 0,
+      "tcs_patches": 0,
+      "tes_invocations": 0,
+      "vs_invocations": 0
+    },
+    "ps_invocations": 0,
+    "vendor": {
+      "api": "",
+      "available": false,
+      "counters": [],
+      "note": "VK_KHR_performance_query not present on this device/driver (device=\"AMD Radeon RX 9060 XT (RADV GFX1200)\" type=discrete driver=\"radv\"). RADV on RDNA4/GFX12 often still lacks performanceCounterQueryPools in current Mesa. Use the integrated RADV device for HW counters, e.g. --device-index 1, or wait for newer Mesa RADV perf-counter support on GFX12."
+    },
+    "vs_invocations": 0,
+    "workload": {
+      "dispatch_count": 1,
+      "draw_count": 0
+    }
+  },
+  "device": {
+    "driver": "Mesa 25.2.0-devel",
+    "name": "AMD Radeon RX 9060 XT (RADV GFX1200) [discrete] radv perf_query=no",
+    "vendor": "vendorID via radv"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=856.000000MHz, mclk=96.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-34-generic"
+  },
+  "execution": {
+    "iterations": 100,
+    "warmup": 10
+  },
+  "note": "PASS\nIA_V=0 IA_P=0 VS=0 TCS=0 TES=0 GS=0 GS_P=0 FS/PS=0 CS=1048576 CLIP_I=0 CLIP_P=0 gpu_ms=0.38874 stages[top→cs=0.38788 cs→bot=0.00084 ms] host_record_ms=0.00038 host_submit_ms=0.00464 host_queue_wait_ms=0.534191 host_h2d_ms=0.929934 host_d2h_ms=13.8283\n=== Portable pipeline statistics (VK_QUERY_TYPE_PIPELINE_STATISTICS) ===",
+  "power": {
+    "active_avg_watts": 8.074074074074073,
+    "avg_watts": 19.074074074074073,
+    "device": "card1",
+    "duration_ms": 113.23249197006226,
+    "energy_active_joules": 1.1543497632741928,
+    "energy_joules": 2.399907174944877,
+    "idle_watts": 11.0,
+    "max_watts": 33.0,
+    "min_watts": 9.0,
+    "samples": 27,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.41016,
+    "mean_ms": 0.39024240000000016,
+    "median_ms": 0.38874,
+    "min_ms": 0.38236,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.00605241854468113
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "vector_add",
+    "operation": "vector_add"
+  }
+}

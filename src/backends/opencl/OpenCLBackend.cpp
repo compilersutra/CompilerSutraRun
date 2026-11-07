@@ -86,11 +86,18 @@ Expected<ClDevice> pickDevice(const DeviceInfo &want) {
   auto all = listClDevices();
   if (!all)
     return all.error();
+  // Prefer exact physical index (set by --device-index / PlatformRuntime).
   for (const auto &d : all.value()) {
-    if (d.index == want.index || d.name == want.name)
+    if (d.index == want.index)
       return d;
   }
-  return all.value().front();
+  for (const auto &d : all.value()) {
+    if (!want.name.empty() && d.name == want.name)
+      return d;
+  }
+  return Error::make(ErrorCode::DeviceNotFound,
+                     "OpenCL device index " + std::to_string(want.index) +
+                         " not found (see --list-devices)");
 }
 
 } // namespace
@@ -161,7 +168,21 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   if (err != CL_SUCCESS || !ctx)
     return Error::make(ErrorCode::DriverError, "clCreateContext: " + clErr(err));
 
-  cl_command_queue queue = clCreateCommandQueueWithProperties(ctx, dev.device, nullptr, &err);
+  // Prefer a profiling queue so Mode B (device event) timing is available.
+  bool profilingQueue = true;
+  cl_queue_properties qprops[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
+  cl_command_queue queue =
+      clCreateCommandQueueWithProperties(ctx, dev.device, qprops, &err);
+  if (err != CL_SUCCESS || !queue) {
+    profilingQueue = false;
+    queue = clCreateCommandQueueWithProperties(ctx, dev.device, nullptr, &err);
+  }
+  if (err != CL_SUCCESS || !queue) {
+    profilingQueue = false;
+    queue = clCreateCommandQueue(ctx, dev.device, CL_QUEUE_PROFILING_ENABLE, &err);
+    if (err == CL_SUCCESS && queue)
+      profilingQueue = true;
+  }
   if (err != CL_SUCCESS || !queue)
     queue = clCreateCommandQueue(ctx, dev.device, 0, &err);
   if (err != CL_SUCCESS || !queue) {
@@ -234,12 +255,41 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
 
   PowerSampler power;
 
-  auto dispatchOnce = [&]() -> Expected<double> {
+  // Mode B: CL_PROFILING_COMMAND_START/END on the NDRange event when the queue
+  // was created with CL_QUEUE_PROFILING_ENABLE. Mode A: host wall around
+  // enqueue + clFinish. Transfers remain outside the timed loop.
+  TimingSource timingSource =
+      profilingQueue ? TimingSource::GpuTimestamp : TimingSource::CpuWall;
+
+  auto dispatchOnce = [&](bool timed) -> Expected<double> {
+    cl_event ev = nullptr;
+    cl_event *evPtr = (timed && profilingQueue) ? &ev : nullptr;
     const auto t0 = std::chrono::steady_clock::now();
     cl_int e =
-        clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global, &local, 0, nullptr, nullptr);
+        clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global, &local, 0, nullptr, evPtr);
     if (e != CL_SUCCESS)
       return Error::make(ErrorCode::ExecutionFailed, "clEnqueueNDRangeKernel: " + clErr(e));
+
+    if (ev) {
+      e = clWaitForEvents(1, &ev);
+      if (e != CL_SUCCESS) {
+        clReleaseEvent(ev);
+        return Error::make(ErrorCode::ExecutionFailed, "clWaitForEvents: " + clErr(e));
+      }
+      cl_ulong startNs = 0;
+      cl_ulong endNs = 0;
+      const cl_int e0 =
+          clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(startNs), &startNs, nullptr);
+      const cl_int e1 =
+          clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(endNs), &endNs, nullptr);
+      clReleaseEvent(ev);
+      if (e0 == CL_SUCCESS && e1 == CL_SUCCESS && endNs >= startNs) {
+        return static_cast<double>(endNs - startNs) / 1.0e6;
+      }
+      // Profiling probe failed for this iteration — fall back to host wall.
+      timingSource = TimingSource::CpuWall;
+    }
+
     e = clFinish(queue);
     if (e != CL_SUCCESS)
       return Error::make(ErrorCode::ExecutionFailed, "clFinish: " + clErr(e));
@@ -258,7 +308,7 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   };
 
   for (int i = 0; i < warmupIters; ++i) {
-    auto w = dispatchOnce();
+    auto w = dispatchOnce(false);
     if (!w) {
       cleanup();
       return w.error();
@@ -268,7 +318,7 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   std::vector<double> samples;
   samples.reserve(static_cast<size_t>(timedIters));
   for (int i = 0; i < timedIters; ++i) {
-    auto ms = dispatchOnce();
+    auto ms = dispatchOnce(true);
     if (!ms) {
       cleanup();
       return ms.error();
@@ -292,7 +342,7 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
 
   RunResult result =
       fillVectorAddResult(workload, report, BackendType::OpenCL, "opencl-online-compiler", options,
-                          samples, TimingSource::CpuWall, host.reference, host.output);
+                          samples, timingSource, host.reference, host.output);
   result.power = power.stats();
   cleanup();
   logInfo("runtime", "OpenCL vector_add completed on " + result.deviceName);

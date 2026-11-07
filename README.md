@@ -60,7 +60,37 @@ cmake --preset release && cmake --build --preset release
 ./build/bin/csrun --compile-spv examples/vector_add/vector_add.comp -o /tmp/vadd.spv
 ```
 
-Useful flags: `--no-validate`, `--no-benchmark`, `--backend <name>`, `--log-level error`.
+Useful flags: `--no-validate`, `--no-benchmark`, `--backend <name>`,
+`--device-index <n>`, `--log-level error`.
+
+### Dual-GPU device selection
+
+On multi-GPU hosts, device selection is **not** uniform across APIs:
+
+| Backend | How to pick a physical GPU |
+|---------|----------------------------|
+| Vulkan / OpenCL / HIP | `--device-index N` (see `--list-devices`) |
+| OpenGL | environment `DRI_PRIME=1` for the discrete GPU; omit for the default (often iGPU). OpenGL does **not** honor `--device-index` yet |
+
+Force a real RADV ICD on Mesa (avoid llvmpipe-only enumeration):
+
+```bash
+export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
+./build/bin/csrun --list-devices
+```
+
+Paper smoke (8 cells: 4 APIs × dGPU/iGPU) and archived JSON:
+
+```bash
+./experiments/scripts/smoke_dual_gpu.sh experiments/raw/my-smoke
+# archived batch cited in the paper:
+#   experiments/raw/revalidate-20261020/
+```
+
+Contracts: [`docs/timing-model.md`](docs/timing-model.md),
+[`docs/validation.md`](docs/validation.md).
+Workshop draft: [`papers/csrun/v2/main.pdf`](papers/csrun/v2/main.pdf).
 
 ### CUDA note
 
