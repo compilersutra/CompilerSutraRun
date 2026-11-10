@@ -1,78 +1,103 @@
-# CompilerSutraRun
+# CompilerSutraRun (`csrun`)
 
-**CLI:** `csrun`  
-**Product:** [CompilerSutra](https://compilersutra.com)
+[![CI](https://github.com/compilersutra/CompilerSutraRun/actions/workflows/ci.yml/badge.svg)](https://github.com/compilersutra/CompilerSutraRun/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/badge/paper%20tag-v0.1.0--paper-green.svg)](https://github.com/compilersutra/CompilerSutraRun/releases/tag/v0.1.0-paper)
 
-Cross-API GPU workload runner: describe once in YAML, execute on real backends, validate against a CPU reference, and emit comparable timing JSON.
+Welcome to **CompilerSutraRun** — a reusable execution and validation harness
+for cross-API GPU workloads.
 
-**Primary authoring path:** handwritten `.vert` / `.frag` / `.comp` (and other stages) → SPIR-V (glslang) → load/read on Vulkan. Kernel ops like `vector_add` sit beside that.
+Describe a workload once in YAML, run it on real GPU backends, check results
+against a CPU reference, and emit machine-readable timing JSON with an explicit
+measurement source. The CLI is `csrun`.
 
-This is an **orchestration layer**. It does not invent a new IR, driver, or shader compiler. It reuses Vulkan, OpenGL, OpenCL, HIP/ROCm, and (planned) CUDA / D3D12 / Metal / WebGPU toolchains — and reports `UNAVAILABLE` when a path is missing. Never fakes results.
+Part of [CompilerSutra](https://compilersutra.com).
 
-## Features
+## What this project is
 
-| Capability | Status |
-|------------|--------|
-| Workload YAML + JSON results | Done |
-| Vulkan (SPIR-V / glslang) `vector_add` | Done |
-| OpenGL 4.3 compute (EGL headless) | Done |
-| OpenCL ICD `vector_add` | Done |
-| HIP / ROCm (hiprtc) `vector_add` | Done |
-| `csrun --all` across available backends | Done |
-| Virtual `Backend::execute` + shared host scaffold | Done |
-| CUDA / D3D12 / Metal / WebGPU / CPU / GLES | Planned (honest stubs) |
+CompilerSutraRun is an **orchestration layer**. It binds a portable workload
+contract to concrete APIs and keeps host scaffolding (device selection,
+validation, result schema, timing provenance) out of each backend.
 
-Roadmap: [`docs/milestones.md`](docs/milestones.md) · Architecture: [`docs/architecture.md`](docs/architecture.md)
+It does **not** invent a new GPU IR, driver, or shader compiler. It reuses
+existing toolchains (glslang / SPIR-V, OpenCL ICD, HIP/hiprtc, Mesa, vendor
+SDKs) and reports `UNAVAILABLE` when a path is missing. It never fakes
+success.
 
-## Requirements
+| Supported today | Stub / planned (fail-closed) |
+|-----------------|------------------------------|
+| Vulkan (SPIR-V) | CUDA |
+| OpenGL 4.3 compute (EGL) | D3D12 |
+| OpenCL | Metal |
+| HIP / ROCm | WebGPU, GLES, CPU backend |
 
-- CMake ≥ 3.20, Ninja, C++20 compiler
-- Optional: Vulkan loader + glslangValidator, OpenGL/EGL, OpenCL ICD, ROCm/HIP
+Primary authoring path for graphics/compute shaders:
+handwritten `.vert` / `.frag` / `.comp` → SPIR-V (glslang) → Vulkan.
+Kernel ops such as `vector_add` sit beside that path.
 
-## Build
+## Getting started
+
+### Requirements
+
+- CMake ≥ 3.20, Ninja, a C++20 compiler
+- Optional SDKs enable backends at configure time:
+  Vulkan + `glslangValidator`, OpenGL/EGL, OpenCL ICD, ROCm/HIP
+
+### Build and test
 
 ```bash
+git clone https://github.com/compilersutra/CompilerSutraRun.git
+cd CompilerSutraRun
+
 cmake --preset default
 cmake --build --preset default
 ctest --preset default
+
+./build/bin/csrun --list-backends
+./build/bin/csrun --list-devices
 ```
 
-Release:
+Release build:
 
 ```bash
 cmake --preset release && cmake --build --preset release
 ```
 
-## Usage
+CMake options follow the usual pattern (`-DCSRUN_ENABLE_<BACKEND>=ON|OFF`).
+Missing toolkits become honest stubs, not silent success.
+
+## Quick examples
 
 ```bash
-./build/bin/csrun --list-backends
-./build/bin/csrun --list-devices
+# Vector add on one backend
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend vulkan
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend opencl
 ./build/bin/csrun examples/vector_add/vector_add.yaml --backend hip
+
+# All available backends
 ./build/bin/csrun examples/vector_add/vector_add.yaml --all
-./build/bin/csrun examples/shaders/triangle.yaml --backend vulkan
-./build/bin/csrun examples/shaders/triangle.yaml --backend vulkan --no-show
-./build/bin/csrun --compile-spv examples/shaders/triangle.vert -o /tmp/t.vert.spv
-./build/bin/csrun --inspect-spv /tmp/t.vert.spv
-./build/bin/csrun examples/vector_add/vector_add.yaml --format json
+
+# JSON results (validation + timing.source)
+./build/bin/csrun examples/vector_add/vector_add.yaml --backend vulkan --format json
+
+# SPIR-V authoring helpers
 ./build/bin/csrun --compile-spv examples/vector_add/vector_add.comp -o /tmp/vadd.spv
+./build/bin/csrun --inspect-spv /tmp/vadd.spv
 ```
 
-Useful flags: `--no-validate`, `--no-benchmark`, `--backend <name>`,
-`--device-index <n>`, `--log-level error`.
+Useful flags: `--backend`, `--device-index`, `--no-validate`, `--no-benchmark`,
+`--format json`, `--log-level error`.
 
-### Dual-GPU device selection
+### Dual-GPU hosts
 
-On multi-GPU hosts, device selection is **not** uniform across APIs:
+Device selection is API-specific:
 
 | Backend | How to pick a physical GPU |
 |---------|----------------------------|
 | Vulkan / OpenCL / HIP | `--device-index N` (see `--list-devices`) |
-| OpenGL | environment `DRI_PRIME=1` for the discrete GPU; omit for the default (often iGPU). OpenGL does **not** honor `--device-index` yet |
+| OpenGL | `DRI_PRIME=1` for discrete; omit for default (often iGPU). OpenGL does not honor `--device-index` yet |
 
-Force a real RADV ICD on Mesa (avoid llvmpipe-only enumeration):
+On Mesa/AMD, force a real RADV ICD when needed:
 
 ```bash
 export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
@@ -80,64 +105,83 @@ export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
 ./build/bin/csrun --list-devices
 ```
 
-Paper smoke (8 cells: 4 APIs × dGPU/iGPU) and archived JSON:
+Paper smoke (4 APIs × discrete/integrated):
 
 ```bash
 ./experiments/scripts/smoke_dual_gpu.sh experiments/raw/my-smoke
-# archived batch cited in the paper:
-#   experiments/raw/revalidate-20261020/
 ```
 
-Contracts: [`docs/timing-model.md`](docs/timing-model.md),
-[`docs/validation.md`](docs/validation.md).
-Workshop draft: [`papers/csrun/v2/main.pdf`](papers/csrun/v2/main.pdf).
+Archived batch cited in the workshop draft:
+`experiments/raw/revalidate-20261020/`.
 
-### CUDA note
+## Documentation
 
-This product builds CUDA only when the toolkit and an NVIDIA device are present (`-DCSRUN_ENABLE_CUDA=ON`). On AMD-only hosts the backend stays `UNAVAILABLE`. Test on an NVIDIA workstation or cloud GPU when implementing that path.
+| Doc | Contents |
+|-----|----------|
+| [Architecture](docs/architecture.md) | Control plane vs backends |
+| [Workload format](docs/workload-format.md) | YAML contract |
+| [Timing model](docs/timing-model.md) | Mode A / Mode B, `timing.source` |
+| [Validation](docs/validation.md) | CPU-reference predicate and statuses |
+| [Milestones](docs/milestones.md) | Roadmap |
+| [Development](docs/development.md) | Local workflow |
+| [Contributing](CONTRIBUTING.md) | PR rules and backend checklist |
+| [Experiments](experiments/README.md) | Paper artifact / smoke |
+| [Workshop paper](papers/csrun/v2/main.pdf) | Tool-paper draft (`v0.1.0-paper`) |
 
-## Layout
+## Repository layout
 
 ```text
-include/csrun/     public headers
-src/               libraries + backends
-tools/csrun/       CLI
-examples/          sample workloads / kernels
-tests/             unit + fixtures
-docs/              architecture, milestones, design
-prompt/            product briefs (archived)
-.github/           CI, templates, CODEOWNERS
+include/csrun/     Public headers
+src/               Libraries and backend adapters
+tools/csrun/       CLI entry point
+examples/          Sample workloads and kernels
+tests/             Unit tests and fixtures
+docs/              Design and contracts
+experiments/       Smoke scripts and archived JSON
+papers/csrun/      Workshop paper sources + PDF
+.github/           CI and templates
 ```
 
 ## Design rules
 
-- One backend per API; common code never includes vendor headers
-- `Backend::execute` is the control plane; registration is a single path
-- Shared host prep lives in `VectorAddScaffold` — backends own compile/submit/timing only
-- Integrate mature OSS; do not reimplement glslang / DXC / nvcc
+These match how mature compiler/runtime projects stay maintainable:
 
-## Related
+1. **One backend per API** — common code never includes vendor headers.
+2. **One execute path** — `Backend::execute` is the control plane; registration is singular.
+3. **Shared host prep, local dispatch** — scaffolds own validation/setup; backends own compile, buffers, submit, and timers.
+4. **Reuse toolchains** — glslang, SPIR-V Tools, hiprtc, NVCC, DXC; do not reimplement them.
+5. **Fail closed** — stubs and missing devices report `UNAVAILABLE`, never a fake pass.
 
-- **CompilerSutraPerfTool** (`csperf`) — experiment / diff / report front door (separate product; integrates later via M8)
-- LLVM/MLIR trees are **not** modified by this repository
+## Status
 
-## Contributing
+| Capability | State |
+|------------|-------|
+| Workload YAML + JSON results | Supported |
+| Vulkan / OpenGL / OpenCL / HIP `vector_add` | Supported |
+| `csrun --all` across available backends | Supported |
+| Explicit `--device-index` (Vulkan/OpenCL/HIP) | Supported |
+| CUDA / D3D12 / Metal / WebGPU | Stub (`UNAVAILABLE`) |
+| Multi-workload paper study | Follow-on |
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/development.md`](docs/development.md).
+## Related projects
 
-## Team & thanks
+- **CompilerSutraPerfTool** (`csperf`) — experiment / diff / report front door (separate repo; integrates later)
+- This tree does **not** modify LLVM/MLIR sources; it is a consumer-style harness beside those ecosystems
 
-Workshop paper draft and artifact live under
-[`papers/csrun/`](papers/csrun/) (PDF: [`v2/main.pdf`](papers/csrun/v2/main.pdf)).
+## Getting involved
 
-Thanks to [@AdityaT11](https://github.com/AdityaT11) and **Sayu** for the
-collaboration on this work — please review the paper and artifact **as a team**
-before we treat the draft as submission-ready.
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
+- Prefer small, focused changes; match `.clang-format`
+- GPU backend changes should be smoke-tested on real hardware when available
+- Security reports: [SECURITY.md](SECURITY.md)
 
-## Security
+### Acknowledgments
 
-See [`SECURITY.md`](SECURITY.md).
+Thanks to [@AdityaT11](https://github.com/AdityaT11) and **Sayu** for
+collaborating on CompilerSutraRun and the workshop draft. Please review the
+paper and artifact **as a team** before treating the draft as submission-ready
+([paper notes](papers/csrun/THANKS.md)).
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).
