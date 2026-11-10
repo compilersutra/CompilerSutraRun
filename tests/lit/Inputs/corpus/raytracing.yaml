@@ -1,0 +1,16 @@
+# Ray-tracing pipeline smoke (raygen / closesthit / miss).
+name: corpus_raytracing
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/raytracingbasic/raygen.rgen
+  - external/shader-corpus/Vulkan/shaders/glsl/raytracingbasic/closesthit.rchit
+  - external/shader-corpus/Vulkan/shaders/glsl/raytracingbasic/miss.rmiss
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

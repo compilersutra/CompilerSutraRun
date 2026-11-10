@@ -1,0 +1,15 @@
+# Texture mipmapgen sample (promoted).
+name: corpus_texture_mipmap
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/texturemipmapgen/texture.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/texturemipmapgen/texture.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

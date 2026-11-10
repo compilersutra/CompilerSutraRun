@@ -1,0 +1,3 @@
+# Corpus compile: shadowmapping/offscreen.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/shadowmapping/offscreen.vert -o %t.spv

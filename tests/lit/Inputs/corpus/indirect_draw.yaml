@@ -1,0 +1,15 @@
+# Needs vkCmdDrawIndirect (smoke uses vkCmdDraw only).
+name: todo_indirect_draw
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/indirectdraw/indirectdraw.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/indirectdraw/indirectdraw.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

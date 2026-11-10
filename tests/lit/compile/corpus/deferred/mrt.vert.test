@@ -1,0 +1,3 @@
+# Corpus compile: deferred/mrt.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/deferred/mrt.vert -o %t.spv

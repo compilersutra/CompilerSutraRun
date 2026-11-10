@@ -1,0 +1,3 @@
+# Corpus compile: graphicspipelinelibrary/shared.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/graphicspipelinelibrary/shared.vert -o %t.spv

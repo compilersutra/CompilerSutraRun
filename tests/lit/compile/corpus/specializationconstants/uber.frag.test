@@ -1,0 +1,3 @@
+# Corpus compile: specializationconstants/uber.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/specializationconstants/uber.frag -o %t.spv

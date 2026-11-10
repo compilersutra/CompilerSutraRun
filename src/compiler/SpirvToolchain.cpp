@@ -253,7 +253,8 @@ Expected<SpirvCompileResult> SpirvToolchain::compile(const SpirvCompileRequest &
     std::filesystem::create_directories(out.spvPath.parent_path());
 
   auto compile = runProcess({glslang.value().string(), "-V", "-S", std::string(token),
-                             req.input.string(), "-o", out.spvPath.string()});
+                             "--target-env", "vulkan1.3", req.input.string(), "-o",
+                             out.spvPath.string()});
   if (!compile)
     return compile.error();
   if (compile.value().exitCode != 0) {

@@ -7,6 +7,7 @@
 
 #include "csrun/backend/BackendType.h"
 #include "csrun/benchmark/PipelineStats.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/benchmark/Timing.h"
 #include "csrun/core/Expected.h"
 
@@ -16,8 +17,16 @@ namespace csrun {
 
 enum class ValidationStatus { NotRun, Passed, Failed, Skipped };
 
+struct EnvironmentInfo {
+  std::string kernelVersion;
+  std::string cpuModel;
+  std::string gpuDriverVersion;
+  std::string gpuClocks;
+  std::string csrunVersion;
+};
+
 struct RunResult {
-  int schemaVersion = 2;
+  int schemaVersion = 3;
   std::string workloadName;
   std::string operation;
   BackendType backend{};
@@ -29,9 +38,13 @@ struct RunResult {
   int iterations = 0;
   TimingStats timing;
   PipelineStats counters;
+  PowerStats power;
+  EnvironmentInfo environment;
   ValidationStatus validation = ValidationStatus::NotRun;
   std::string note;
 };
+
+EnvironmentInfo gatherEnvironmentInfo();
 
 class JsonWriter {
 public:

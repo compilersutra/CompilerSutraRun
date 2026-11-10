@@ -1,0 +1,14 @@
+name: corpus_shaderobjects
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/shaderobjects/phong.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/shaderobjects/phong.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

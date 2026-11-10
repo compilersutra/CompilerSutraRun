@@ -1,0 +1,3 @@
+# Corpus compile: deferredmultisampling/deferred.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/deferredmultisampling/deferred.frag -o %t.spv

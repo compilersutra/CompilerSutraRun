@@ -1,0 +1,2 @@
+# REQUIRES: vulkan, gpu, examples
+# RUN: %csrun %repo/examples/shaders/plasma_bench_1080.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

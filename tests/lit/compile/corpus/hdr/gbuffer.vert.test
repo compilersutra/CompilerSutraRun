@@ -1,0 +1,3 @@
+# Corpus compile: hdr/gbuffer.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/hdr/gbuffer.vert -o %t.spv

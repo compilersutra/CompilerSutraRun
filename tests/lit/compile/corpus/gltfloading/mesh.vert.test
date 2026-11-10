@@ -1,0 +1,3 @@
+# Corpus compile: gltfloading/mesh.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/gltfloading/mesh.vert -o %t.spv

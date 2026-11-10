@@ -2,7 +2,103 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
 namespace csrun {
+namespace {
+
+std::string readFileLine(const std::filesystem::path &path) {
+  std::ifstream in(path);
+  std::string line;
+  std::getline(in, line);
+  if (!line.empty() && line.back() == '\r')
+    line.pop_back();
+  return line;
+}
+
+std::string kernelVersion() {
+  std::array<char, 256> buf{};
+  if (std::system("uname -r > /tmp/csrun_kernel.txt 2>/dev/null") == 0)
+    return readFileLine("/tmp/csrun_kernel.txt");
+  return "unknown";
+}
+
+std::string cpuModel() {
+  std::ifstream in("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.find("model name") != std::string::npos) {
+      auto pos = line.find(':');
+      if (pos != std::string::npos)
+        return line.substr(pos + 2);
+    }
+  }
+  return "unknown";
+}
+
+std::string gpuDriverVersion() {
+  for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
+    if (!entry.is_directory())
+      continue;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("card", 0) != 0 || name.find('-') != std::string::npos)
+      continue;
+    auto uevent = readFileLine(entry.path() / "device" / "uevent");
+    if (uevent.find("DRIVER=") == 0) {
+      std::ifstream ver(entry.path() / "device" / "version");
+      std::string v;
+      std::getline(ver, v);
+      return uevent.substr(7) + " " + v;
+    }
+  }
+  return "unknown";
+}
+
+std::string gpuClocks() {
+  for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm")) {
+    if (!entry.is_directory())
+      continue;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("card", 0) != 0 || name.find('-') != std::string::npos)
+      continue;
+    auto hwmonDir = entry.path() / "device" / "hwmon";
+    if (!std::filesystem::exists(hwmonDir))
+      continue;
+    for (const auto &h : std::filesystem::directory_iterator(hwmonDir)) {
+      std::string clocks;
+      for (uint32_t i = 1; i <= 2; ++i) {
+        auto labelPath = h.path() / ("freq" + std::to_string(i) + "_label");
+        auto inputPath = h.path() / ("freq" + std::to_string(i) + "_input");
+        if (std::filesystem::exists(labelPath) && std::filesystem::exists(inputPath)) {
+          auto label = readFileLine(labelPath);
+          auto input = readFileLine(inputPath);
+          if (!clocks.empty())
+            clocks += ", ";
+          clocks += label + "=" + std::to_string(std::stoull(input) / 1000000.0) + "MHz";
+        }
+      }
+      if (!clocks.empty())
+        return clocks;
+    }
+  }
+  return "unknown";
+}
+
+} // namespace
+
+EnvironmentInfo gatherEnvironmentInfo() {
+  EnvironmentInfo info;
+  info.kernelVersion = kernelVersion();
+  info.cpuModel = cpuModel();
+  info.gpuDriverVersion = gpuDriverVersion();
+  info.gpuClocks = gpuClocks();
+  info.csrunVersion = "0.1.0";
+  return info;
+}
 
 std::string_view toString(ValidationStatus status) {
   switch (status) {
@@ -149,6 +245,30 @@ Expected<std::string> JsonWriter::write(const RunResult &result) {
         {"overdraw_estimate", c.overdrawEstimate()},
     };
   }
+  if (result.power.available) {
+    j["power"] = {
+        {"source", result.power.source},
+        {"device", result.power.device},
+        {"samples", result.power.samples},
+        {"duration_ms", result.power.durationMs},
+        {"avg_watts", result.power.avgWatts},
+        {"min_watts", result.power.minWatts},
+        {"max_watts", result.power.maxWatts},
+        {"energy_joules", result.power.energyJoules},
+        {"idle_watts", result.power.idleWatts},
+        {"active_avg_watts", result.power.activeAvgWatts},
+        {"energy_active_joules", result.power.energyActiveJoules},
+    };
+    if (!result.power.note.empty())
+      j["power"]["note"] = result.power.note;
+  }
+  j["environment"] = {
+      {"kernel", result.environment.kernelVersion},
+      {"cpu", result.environment.cpuModel},
+      {"gpu_driver", result.environment.gpuDriverVersion},
+      {"gpu_clocks", result.environment.gpuClocks},
+      {"csrun_version", result.environment.csrunVersion},
+  };
   j["validation"] = {
       {"status", std::string(toString(result.validation))},
   };

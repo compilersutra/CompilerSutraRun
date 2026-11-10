@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "CompilerSutraRun (csrun): A Reusable Execution and Validation Harness for Cross-API GPU Workloads"
+message: "If you use CompilerSutraRun, please cite it as below."
+type: software
+authors:
+  - family-names: Tiwari
+    given-names: Aditya
+    email: aditya.tiwari@compilersutra.com
+  - family-names: Pandey
+    given-names: Priya
+repository-code: "https://github.com/compilersutra/CompilerSutraRun"
+license: Apache-2.0
+version: "0.1.0-paper"
+keywords:
+  - GPU
+  - Vulkan
+  - OpenCL
+  - HIP
+  - OpenGL
+  - validation
+  - reproducibility
+abstract: >-
+  CompilerSutraRun (csrun) binds a YAML workload contract to Vulkan, OpenGL,
+  OpenCL, and HIP backends with CPU-reference validation, fail-closed
+  UNAVAILABLE reporting, and labeled timing provenance.

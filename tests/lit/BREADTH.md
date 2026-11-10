@@ -1,0 +1,145 @@
+# Execute breadth matrix (Vulkan corpus)
+
+One representative workload **per sample folder**. **Scan breadth-first**, then pick features by bucket size.
+
+```bash
+. scripts/env-mesa-main-radv.sh
+./tools/csrun-breadth
+```
+
+Last run: **PASS=82 FAIL=13 SKIP=0** (15.7s)
+
+## Buckets (priority = fail count)
+
+| Bucket | Count | Meaning | Next action |
+|--------|------:|---------|-------------|
+| `PASS` | 82 | Works today | Keep in execute/corpus regression |
+| `FAIL_BLACK` | 6 | Runs but black / wrong | data: push/UBO/draw path |
+| `FAIL_OTHER` | 4 | other | inspect .cache/breadth-scan/<sample>.log |
+| `FAIL_COMPILE` | 1 | glslang fail | compile XFAIL or toolchain |
+| `FAIL_COMPUTE_RES` | 1 | compute resources | extend compute generic |
+| `FAIL_DESC_KIND` | 1 | Unknown descriptor type | todo: ray_query / accel / new kinds |
+
+## Samples by bucket
+
+### PASS (82)
+
+- `base`
+- `bloom`
+- `bufferdeviceaddress`
+- `computecloth`
+- `computecullandlod`
+- `computeheadless`
+- `computenbody`
+- `computeparticles`
+- `computeraytracing`
+- `computeshader`
+- `conditionalrender`
+- `conservativeraster`
+- `debugprintf`
+- `debugutils`
+- `deferredmultisampling`
+- `deferredshadows`
+- `descriptorbuffer`
+- `descriptorheap`
+- `descriptorindexing`
+- `descriptorsets`
+- `distancefieldfonts`
+- `dynamicrendering`
+- `dynamicrenderinglocalread`
+- `dynamicuniformbuffer`
+- `fragmentshaderbarycentrics`
+- `gears`
+- `geometryshader`
+- `gltfloading`
+- `gltfscenerendering`
+- `gltfskinning`
+- `graphicspipelinelibrary`
+- `hdr`
+- `imgui`
+- `indirectdraw`
+- `inlineuniformblocks`
+- `inputattachments`
+- `instancing`
+- `meshshader`
+- `multisampling`
+- `multisamplingalphatocoverage`
+- `multithreading`
+- `multiview`
+- `negativeviewportheight`
+- `occlusionquery`
+- `parallaxmapping`
+- `particlesystem`
+- `pbribl`
+- `pbrtexture`
+- `pipelines`
+- `pipelinestatistics`
+- `pushconstants`
+- `pushdescriptors`
+- `radialblur`
+- `raytracingbasic`
+- `raytracingcallable`
+- `raytracingintersection`
+- `raytracingpositionfetch`
+- `raytracingtextures`
+- `renderheadless`
+- `screenshot`
+- `shaderobjects`
+- `shadowmapping`
+- `shadowmappingcascade`
+- `shadowmappingomni`
+- `specializationconstants`
+- `sphericalenvmapping`
+- `stencilbuffer`
+- `subpasses`
+- `tessellation`
+- `textoverlay`
+- `texture`
+- `texture3d`
+- `texturearray`
+- `texturecubemap`
+- `texturecubemaparray`
+- `texturemipmapgen`
+- `texturesparseresidency`
+- `triangle`
+- `variablerateshading`
+- `vertexattributes`
+- `viewportarray`
+- `vulkanscene`
+
+### FAIL_BLACK (6)
+
+- `deferred` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+- `displacement` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+- `offscreen` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+- `pbrbasic` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+- `ssao` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+- `terraintessellation` — `* FAIL: rendered frame failed evidence checks (coverage/colours/determinism)`
+
+### FAIL_OTHER (4)
+
+- `raytracinggltf` — `nonzero`
+- `raytracingreflections` — `nonzero`
+- `raytracingsbtdata` — `nonzero`
+- `raytracingshadows` — `nonzero`
+
+### FAIL_COMPILE (1)
+
+- `descriptorheapuntyped` — `COMPILATION_FAILED: glslangValidator failed for external/shader-corpus/Vulkan/shaders/glsl/descripto`
+
+### FAIL_COMPUTE_RES (1)
+
+- `oit` — `UNSUPPORTED_OPERATION: graphics smoke does not bind storage images yet (set=0 binding=0)`
+
+### FAIL_DESC_KIND (1)
+
+- `rayquery` — `UNSUPPORTED_OPERATION: unsupported descriptor kind at set=0 binding=1`
+
+## Workflow
+
+1. **Breadth** — `./tools/csrun-breadth` (refreshes this file)
+2. **Pick largest actionable bucket**
+3. **todo/ XFAIL** for that capability
+4. **Implement** → promote to `execute/corpus/`
+5. Re-scan; watch the bucket shrink
+

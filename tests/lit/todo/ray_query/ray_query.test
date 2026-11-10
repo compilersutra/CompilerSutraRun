@@ -1,0 +1,7 @@
+# TODO feature: ray_query
+# When implemented: move this test (+ Inputs/todo/ray_query.yaml) to
+#   tests/lit/execute/corpus/ray_query/
+# and remove XFAIL.
+# REQUIRES: vulkan, gpu, corpus, glslang
+# XFAIL: *
+# RUN: %csrun %repo/tests/lit/Inputs/todo/ray_query.yaml --backend vulkan --no-show --format json --vendor-counters off --no-benchmark

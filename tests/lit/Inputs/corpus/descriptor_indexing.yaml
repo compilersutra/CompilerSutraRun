@@ -1,0 +1,15 @@
+# Runtime descriptor arrays (sampler2D textures[]) smoke.
+name: corpus_descriptor_indexing
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/descriptorindexing/descriptorindexing.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/descriptorindexing/descriptorindexing.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

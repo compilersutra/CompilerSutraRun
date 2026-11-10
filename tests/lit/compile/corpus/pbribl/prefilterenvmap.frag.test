@@ -1,0 +1,3 @@
+# Corpus compile: pbribl/prefilterenvmap.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/pbribl/prefilterenvmap.frag -o %t.spv

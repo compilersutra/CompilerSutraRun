@@ -1,0 +1,2 @@
+# REQUIRES: glslang
+# RUN: %csrun --compile-spv %repo/examples/shaders/triangle.frag -o %t.frag.spv

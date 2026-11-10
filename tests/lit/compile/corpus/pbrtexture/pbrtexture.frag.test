@@ -1,0 +1,3 @@
+# Corpus compile: pbrtexture/pbrtexture.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/pbrtexture/pbrtexture.frag -o %t.spv

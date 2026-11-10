@@ -1,0 +1,3 @@
+# Corpus compile: pbrtexture/skybox.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/pbrtexture/skybox.vert -o %t.spv

@@ -1,0 +1,14 @@
+name: corpus_dynamic_ubo
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/dynamicuniformbuffer/base.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/dynamicuniformbuffer/base.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

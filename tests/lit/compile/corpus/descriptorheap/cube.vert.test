@@ -1,0 +1,3 @@
+# Corpus compile: descriptorheap/cube.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/descriptorheap/cube.vert -o %t.spv

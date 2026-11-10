@@ -27,3 +27,10 @@ CMakeUserPresets.json
 compile_flags.txt
 /tmp/
 *.log
+
+# Local driver/environment dumps captured while debugging a device.
+# Regenerate with: vulkaninfo --json > VP_VULKANINFO_<device>.json
+VP_VULKANINFO*.json
+vulkaninfo*.json
+*.spv
+*.ppm

@@ -1,0 +1,14 @@
+name: corpus_push_descriptors
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/pushdescriptors/cube.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/pushdescriptors/cube.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

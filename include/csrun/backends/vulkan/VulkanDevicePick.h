@@ -123,9 +123,10 @@ inline uint32_t vulkanPickPhysicalDevice(const std::vector<VkPhysicalDevice> &ph
   if (phys.empty())
     return 0;
   if (requestedIndex.has_value()) {
+    // Do not silently fall back to device 0 — that masks dual-GPU selection bugs.
     if (*requestedIndex < phys.size())
       return *requestedIndex;
-    return 0;
+    return static_cast<uint32_t>(phys.size()); // caller treats as out-of-range
   }
 
   uint32_t best = 0;

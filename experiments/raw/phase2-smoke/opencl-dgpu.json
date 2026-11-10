@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "opencl"
+  },
+  "compiler": {
+    "name": "opencl-online-compiler"
+  },
+  "device": {
+    "driver": "3662.0 (HSA1.1,LC)",
+    "name": "gfx1200",
+    "vendor": "Advanced Micro Devices, Inc."
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=1369.000000MHz, mclk=1124.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-34-generic"
+  },
+  "execution": {
+    "iterations": 100,
+    "warmup": 10
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 4.533333333333335,
+    "avg_watts": 19.533333333333335,
+    "device": "card1",
+    "duration_ms": 46.206987142562866,
+    "energy_active_joules": 0.27709100234508516,
+    "energy_joules": 0.9701958094835281,
+    "idle_watts": 15.0,
+    "max_watts": 31.0,
+    "min_watts": 15.0,
+    "samples": 15,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.233441,
+    "mean_ms": 0.02641970999999999,
+    "median_ms": 0.0205205,
+    "min_ms": 0.01984,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.02830601498667554
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "vector_add",
+    "operation": "vector_add"
+  }
+}

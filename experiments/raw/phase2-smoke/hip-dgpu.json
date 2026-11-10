@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "hip"
+  },
+  "compiler": {
+    "name": "hiprtc"
+  },
+  "device": {
+    "driver": "gfx1200",
+    "name": "AMD Radeon RX 9060 XT",
+    "vendor": "AMD"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=1103.000000MHz, mclk=1124.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-34-generic"
+  },
+  "execution": {
+    "iterations": 100,
+    "warmup": 10
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 8.066666666666666,
+    "avg_watts": 19.066666666666666,
+    "device": "card1",
+    "duration_ms": 46.65456295013428,
+    "energy_active_joules": 0.4514144641160965,
+    "energy_joules": 0.9646146565675735,
+    "idle_watts": 11.0,
+    "max_watts": 35.0,
+    "min_watts": 11.0,
+    "samples": 15,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.2847610116004944,
+    "mean_ms": 0.05749578014016152,
+    "median_ms": 0.05126049928367138,
+    "min_ms": 0.04960000142455101,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.029744028201679738
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "vector_add",
+    "operation": "vector_add"
+  }
+}

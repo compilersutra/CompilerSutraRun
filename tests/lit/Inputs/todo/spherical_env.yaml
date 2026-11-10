@@ -1,0 +1,15 @@
+# Needs meaningful env-map / UBO fill (SEM draws black).
+name: todo_spherical_env
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/sphericalenvmapping/sem.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/sphericalenvmapping/sem.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

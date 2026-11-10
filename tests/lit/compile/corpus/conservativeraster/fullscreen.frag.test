@@ -1,0 +1,3 @@
+# Corpus compile: conservativeraster/fullscreen.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/conservativeraster/fullscreen.frag -o %t.spv

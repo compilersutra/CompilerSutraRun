@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Breadth-first execute scan: one probe per Vulkan sample folder → tests/lit/BREADTH.md"""
+from __future__ import annotations
+
+import csv
+import os
+import re
+import shlex
+import subprocess
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+CSRUN = Path(os.environ.get("CSRUN_BIN", REPO / "build/bin/csrun"))
+GLSL = REPO / "external/shader-corpus/Vulkan/shaders/glsl"
+OUT = REPO / ".cache/breadth-scan"
+MATRIX = REPO / "tests/lit/BREADTH.md"
+
+
+def radv_env() -> dict[str, str]:
+    """Source scripts/env-mesa-main-radv.sh and return the resulting environment.
+
+    Without this the Vulkan ICD is whatever auto-discovery picks, which on an AMD box is
+    usually AMDVLPI on the iGPU -- a different driver than the one results get attributed
+    to, and one with a subpass-input defect. Pinning RADV keeps a run reproducible no matter
+    how the tool was invoked.
+    """
+    script = REPO / "scripts" / "env-mesa-main-radv.sh"
+    if not script.is_file():
+        return dict(os.environ)
+    r = subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(script))} >/dev/null 2>&1; env"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        return dict(os.environ)
+    env = dict(os.environ)
+    for line in r.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key] = value
+    return env
+
+
+def list_ext(d: Path, ext: str):
+    return sorted(p for p in d.glob(f"*{ext}") if p.suffix == ext)
+
+
+def pick(d: Path):
+    if list_ext(d, ".rgen"):
+        exts = [".rgen", ".rchit", ".rmiss", ".rahit", ".rint", ".rcall"]
+        return [p for e in exts for p in list_ext(d, e)]
+    task, mesh, frag = list_ext(d, ".task"), list_ext(d, ".mesh"), list_ext(d, ".frag")
+    if task or mesh:
+        out = []
+        if task:
+            out.append(task[0])
+        if mesh:
+            out.append(mesh[0])
+        if frag:
+            out.append(frag[0])
+        return out
+    comp = list_ext(d, ".comp")
+    if comp:
+        return [comp[0]]
+    vert, frag = list_ext(d, ".vert"), list_ext(d, ".frag")
+    if vert and frag:
+        out = [vert[0]]
+        for e in (".tesc", ".tese", ".geom"):
+            xs = list_ext(d, e)
+            if xs:
+                out.append(xs[0])
+        out.append(frag[0])
+        return out
+    return []
+
+
+# Markers the Vulkan smoke path emits when the rendered frame fails its evidence
+# checks (coverage / colour variety / determinism). Kept in sync with the messages in
+# src/backends/vulkan/VulkanSpirvRunner.cpp.
+BLACK_MARKERS = (
+    "FAIL: rendered frame failed evidence checks",
+    "FAIL: could not map staging memory for pixel check",
+    # Legacy oracle, kept so an older binary still buckets correctly.
+    "FAIL: center pixel",
+    "vulkan execute failed",
+)
+
+
+def bucketize(text: str, ok: bool):
+    if ok and not any(m in text for m in BLACK_MARKERS):
+        return "PASS", "ok"
+    line = ""
+    for pat in (
+        "UNSUPPORTED_OPERATION",
+        "COMPILATION_FAILED",
+        "INVALID_WORKLOAD",
+        "IO_ERROR",
+        *BLACK_MARKERS,
+    ):
+        m = re.search(rf"^.*{pat}.*$", text, re.M)
+        if m:
+            line = m.group(0).strip()
+            break
+    rules = [
+        ("FAIL_MULTI_SET", r"descriptor set|at most \d+ descriptor sets"),
+        ("FAIL_DESC_KIND", r"unsupported descriptor kind"),
+        ("FAIL_COMPUTE_RES", r"storage buffers only|storage image"),
+        ("FAIL_STAGE", r"does not support shader stage"),
+        ("FAIL_INPUT_ATTACH", r"input attachments"),
+        ("FAIL_COMPILE", r"COMPILATION_FAILED"),
+        ("FAIL_BLACK", "|".join(re.escape(m) for m in BLACK_MARKERS)),
+        ("FAIL_IO", r"IO_ERROR"),
+    ]
+    for name, pat in rules:
+        if re.search(pat, line):
+            return name, line
+    return "FAIL_OTHER", line or "nonzero"
+
+
+HINTS = {
+    "PASS": ("Works today", "Keep in execute/corpus regression"),
+    "FAIL_STAGE": ("Missing pipeline stage", "todo: geometry / tess / mesh / raytracing"),
+    "FAIL_DESC_KIND": ("Unknown descriptor type", "todo: ray_query / accel / new kinds"),
+    "FAIL_INPUT_ATTACH": ("subpassInput", "todo: input_attachments"),
+    "FAIL_BLACK": ("Runs but black / wrong", "data: push/UBO/draw path"),
+    "FAIL_COMPILE": ("glslang fail", "compile XFAIL or toolchain"),
+    "FAIL_MULTI_SET": ("set > 0", "should be rare after multi_set"),
+    "FAIL_COMPUTE_RES": ("compute resources", "extend compute generic"),
+    "FAIL_IO": ("path / yaml", "scanner bug"),
+    "FAIL_OTHER": ("other", "inspect .cache/breadth-scan/<sample>.log"),
+    "no_shaders": ("no vert/frag/comp", "skip"),
+}
+
+
+def main() -> int:
+    if not CSRUN.is_file():
+        print(f"missing {CSRUN}", flush=True)
+        return 1
+    if not GLSL.is_dir():
+        print(f"missing {GLSL}", flush=True)
+        return 1
+    OUT.mkdir(parents=True, exist_ok=True)
+    rows = []
+    lines_out = []
+    t0 = time.time()
+    for sample_dir in sorted(p for p in GLSL.iterdir() if p.is_dir()):
+        sample = sample_dir.name
+        shaders = pick(sample_dir)
+        if not shaders:
+            rows.append((sample, "SKIP", "no_shaders", ""))
+            lines_out.append(f"SKIP  {sample}")
+            continue
+        yaml = OUT / f"{sample}.yaml"
+        body = ["name: breadth_" + sample, "operation: spirv", "backend: vulkan", "shaders:"]
+        for s in shaders:
+            body.append(f"  - {s.relative_to(REPO).as_posix()}")
+        body += [
+            "execution:",
+            "  show: false",
+            "  width: 64",
+            "  height: 64",
+            "  warmup: 0",
+            "  iterations: 1",
+            "validation:",
+            "  enabled: false",
+        ]
+        yaml.write_text("\n".join(body) + "\n")
+        r = subprocess.run(
+            [str(CSRUN), str(yaml), "--vendor-counters", "off", "--no-benchmark", "--log-level", "error"],
+            cwd=REPO,
+            env=radv_env(),
+            capture_output=True,
+            text=True,
+        )
+        text = (r.stdout or "") + (r.stderr or "")
+        (OUT / f"{sample}.log").write_text(text)
+        bucket, detail = bucketize(text, r.returncode == 0)
+        status = "PASS" if bucket == "PASS" else "FAIL"
+        rows.append((sample, status, bucket, detail.replace('"', "'")[:180]))
+        lines_out.append(f"{status:4s}  {sample} | {bucket}")
+        print(lines_out[-1], flush=True)
+
+    ctr = Counter(b for _, _, b, _ in rows)
+    pass_n = sum(1 for _, s, _, _ in rows if s == "PASS")
+    fail_n = sum(1 for _, s, _, _ in rows if s == "FAIL")
+    skip_n = sum(1 for _, s, _, _ in rows if s == "SKIP")
+    elapsed = time.time() - t0
+    summary = [
+        "",
+        "=== BREADTH SUMMARY ===",
+        f"PASS={pass_n} FAIL={fail_n} SKIP={skip_n} TOTAL={len(rows)}  ({elapsed:.1f}s)",
+        "--- buckets ---",
+    ]
+    for k, v in sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0])):
+        summary.append(f"{k:22s} {v}")
+    print("\n".join(summary), flush=True)
+    (OUT / "breadth.txt").write_text("\n".join(lines_out + summary) + "\n")
+    with (OUT / "breadth.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["sample", "status", "bucket", "detail"])
+        w.writerows(rows)
+
+    by_bucket = defaultdict(list)
+    for sample, status, bucket, detail in rows:
+        by_bucket[bucket].append((sample, detail))
+    md = [
+        "# Execute breadth matrix (Vulkan corpus)",
+        "",
+        "One representative workload **per sample folder**. **Scan breadth-first**, then pick features by bucket size.",
+        "",
+        "```bash",
+        ". scripts/env-mesa-main-radv.sh",
+        "./tools/csrun-breadth",
+        "```",
+        "",
+        f"Last run: **PASS={pass_n} FAIL={fail_n} SKIP={skip_n}** ({elapsed:.1f}s)",
+        "",
+        "## Buckets (priority = fail count)",
+        "",
+        "| Bucket | Count | Meaning | Next action |",
+        "|--------|------:|---------|-------------|",
+    ]
+    for k, v in sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0])):
+        mean, act = HINTS.get(k, ("", ""))
+        md.append(f"| `{k}` | {v} | {mean} | {act} |")
+    md += ["", "## Samples by bucket", ""]
+    for k, v in sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0])):
+        md.append(f"### {k} ({v})")
+        md.append("")
+        for sample, detail in by_bucket[k]:
+            extra = f" — `{detail[:100]}`" if detail and k not in ("PASS", "no_shaders") else ""
+            md.append(f"- `{sample}`{extra}")
+        md.append("")
+    md += [
+        "## Workflow",
+        "",
+        "1. **Breadth** — `./tools/csrun-breadth` (refreshes this file)",
+        "2. **Pick largest actionable bucket**",
+        "3. **todo/ XFAIL** for that capability",
+        "4. **Implement** → promote to `execute/corpus/`",
+        "5. Re-scan; watch the bucket shrink",
+        "",
+    ]
+    MATRIX.write_text("\n".join(md) + "\n")
+    print(f"wrote {MATRIX}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

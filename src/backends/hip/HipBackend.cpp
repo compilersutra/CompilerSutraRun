@@ -1,5 +1,6 @@
 #include "csrun/backends/hip/HipBackend.h"
 
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
@@ -186,6 +187,8 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
 
+  PowerSampler power;
+
   hipEvent_t start = nullptr;
   hipEvent_t stop = nullptr;
   const bool haveEvents =
@@ -258,6 +261,7 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
 
   RunResult result = fillVectorAddResult(workload, report, BackendType::HIP, "hiprtc", options,
                                          samples, timingSource, host.reference, host.output);
+  result.power = power.stats();
 
   if (haveEvents) {
     hipEventDestroy(start);

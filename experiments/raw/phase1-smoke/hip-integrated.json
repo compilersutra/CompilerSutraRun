@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "hip"
+  },
+  "compiler": {
+    "name": "hiprtc"
+  },
+  "device": {
+    "driver": "gfx1036",
+    "name": "AMD Radeon Graphics",
+    "vendor": "AMD"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=887.000000MHz, mclk=772.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-34-generic"
+  },
+  "execution": {
+    "iterations": 100,
+    "warmup": 10
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 2.875,
+    "avg_watts": 16.875,
+    "device": "card1",
+    "duration_ms": 96.30430102348328,
+    "energy_active_joules": 0.3199533487558365,
+    "energy_joules": 1.6682135630846027,
+    "idle_watts": 14.0,
+    "max_watts": 23.0,
+    "min_watts": 13.0,
+    "samples": 24,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.6723799705505371,
+    "mean_ms": 0.47909737676382064,
+    "median_ms": 0.4712679982185364,
+    "min_ms": 0.41967400908470154,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.045117520852541365
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "vector_add",
+    "operation": "vector_add"
+  }
+}

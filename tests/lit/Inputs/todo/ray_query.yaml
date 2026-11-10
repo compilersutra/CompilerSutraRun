@@ -1,0 +1,15 @@
+# Needs ray-query / acceleration-structure binding support at execute time.
+name: todo_ray_query
+operation: spirv
+backend: vulkan
+shaders:
+  - external/shader-corpus/Vulkan/shaders/glsl/rayquery/scene.vert
+  - external/shader-corpus/Vulkan/shaders/glsl/rayquery/scene.frag
+execution:
+  show: false
+  width: 64
+  height: 64
+  warmup: 0
+  iterations: 1
+validation:
+  enabled: false

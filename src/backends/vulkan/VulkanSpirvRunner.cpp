@@ -1,11 +1,16 @@
 #include "csrun/backends/vulkan/VulkanSpirvRunner.h"
 
 #include "csrun/backends/vulkan/VulkanDevicePick.h"
+#include "csrun/backends/vulkan/VulkanComputeResources.h"
+#include "csrun/backends/vulkan/VulkanGraphicsResources.h"
 #include "csrun/backends/vulkan/VulkanPerfQuery.h"
 #include "csrun/backends/vulkan/VulkanPipelineQueries.h"
 #include "csrun/backends/vulkan/VulkanWsiPresenter.h"
+#include "csrun/benchmark/PowerSampler.h"
+#include "csrun/compiler/SpirvReflect.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Log.h"
+#include "csrun/validation/FrameCheck.h"
 
 #include <vulkan/vulkan.h>
 
@@ -14,6 +19,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace csrun {
@@ -60,18 +66,50 @@ uint32_t findMemoryType(VkPhysicalDevice phys, uint32_t typeBits, VkMemoryProper
   return std::numeric_limits<uint32_t>::max();
 }
 
+/// Upper bound on primed subpass-input attachments. `MAX_COLOR_ATTACHMENTS` is 8 and a
+/// `subpassInput` index has to be addressable, so anything beyond that is out of scope for
+/// the smoke path rather than silently dropped.
+constexpr uint32_t kMaxInputAttachments = 8;
+
+/// Upper bound on colour attachments. Matches `MAX_COLOR_ATTACHMENTS` on every known
+/// implementation, so a shader declaring more outputs is rejected loudly instead of being
+/// run with the extra locations left undefined.
+constexpr uint32_t kMaxColorOutputs = 8;
+
+/// How many attachments the smoke render pass primes for `subpassInput` reads: one per
+/// declared InputAttachmentIndex, so a shader reading index 2 gets a real attachment 2.
+uint32_t inputAttachmentCount(const std::vector<SpirvDescriptorBinding> &binds) {
+  uint32_t count = 0;
+  for (const SpirvDescriptorBinding &b : binds)
+    count = std::max(count, b.inputAttachmentIndex + 1);
+  return std::min(count, kMaxInputAttachments);
+}
+
+/// Value the priming subpass clears an input attachment to: a mid-grey ramp, distinct per
+/// index so a shader that reads only one of them still lands on a defined, non-zero value.
+/// This is placeholder data, not a G-buffer — the point is to prove the subpass read works.
+float inputAttachmentPrimeValue(uint32_t index, uint32_t count) {
+  return 0.25f + 0.5f * static_cast<float>(index + 1) / static_cast<float>(count);
+}
+
 } // namespace
 
 Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   const bool wantCompute = !req.computeSpv.empty();
-  const bool wantGraphics = !req.vertexSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantMeshGraphics = !req.meshSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantClassicGraphics = !req.vertexSpv.empty() && !req.fragmentSpv.empty();
+  const bool wantGraphics = wantClassicGraphics || wantMeshGraphics;
   if (!wantCompute && !wantGraphics) {
     return Error::make(ErrorCode::InvalidWorkload,
-                       "provide --spv (compute) or --vert-spv + --frag-spv (graphics)");
+                       "provide compute SPIR-V, vert+frag, or mesh+frag graphics SPIR-V");
   }
 
   VulkanSmokeResult out;
   auto &steps = out.steps;
+
+  // Power sampling starts before any warmup loop and covers every exit path
+  // via the guard's destructor.
+  PowerSampler power;
 
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -152,9 +190,146 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   if (perfSetup.want)
     deviceExts.push_back(VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME);
 
+  // Probe descriptor-indexing features (Vulkan 1.2 / EXT) for runtime arrays.
+  VkPhysicalDeviceDescriptorIndexingFeatures indexingQuery{};
+  indexingQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceFeatures2 query2{};
+  query2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  query2.pNext = &indexingQuery;
+  vkGetPhysicalDeviceFeatures2(physical, &query2);
+  const bool wantIndexing = indexingQuery.runtimeDescriptorArray == VK_TRUE &&
+                            indexingQuery.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+
+  const bool wantGeometry = wantGraphics && !req.geometrySpv.empty();
+  const bool wantTess = wantGraphics && (!req.tessControlSpv.empty() || !req.tessEvalSpv.empty());
+  if (wantGeometry && !supportedFeatures.geometryShader) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::UnsupportedOperation,
+                          "device does not support geometryShader feature");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+  if (wantTess && !supportedFeatures.tessellationShader) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::UnsupportedOperation,
+                          "device does not support tessellationShader feature");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+  if (wantTess && (req.tessControlSpv.empty() || req.tessEvalSpv.empty())) {
+    vkDestroyInstance(instance, nullptr);
+    Error e = Error::make(ErrorCode::InvalidWorkload,
+                          "tessellation requires both tesscontrol and tesseval SPIR-V");
+    e.backend = "vulkan";
+    e.operation = "execute";
+    return e;
+  }
+
   VkPhysicalDeviceFeatures enabledFeatures{};
   if (pipeStatsSupported)
     enabledFeatures.pipelineStatisticsQuery = VK_TRUE;
+  if (supportedFeatures.shaderClipDistance)
+    enabledFeatures.shaderClipDistance = VK_TRUE;
+  if (wantGeometry)
+    enabledFeatures.geometryShader = VK_TRUE;
+  if (wantTess)
+    enabledFeatures.tessellationShader = VK_TRUE;
+
+  const bool wantMesh = wantGraphics && !req.meshSpv.empty();
+  VkPhysicalDeviceMeshShaderFeaturesEXT meshQuery{};
+  meshQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+  if (wantMesh) {
+    VkPhysicalDeviceFeatures2 mq2{};
+    mq2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    mq2.pNext = &meshQuery;
+    vkGetPhysicalDeviceFeatures2(physical, &mq2);
+    if (!meshQuery.meshShader) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device does not support meshShader (VK_EXT_mesh_shader)");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    if (!req.taskSpv.empty() && !meshQuery.taskShader) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device does not support taskShader (VK_EXT_mesh_shader)");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    // Check required device extensions are present.
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extCount, nullptr);
+    std::vector<VkExtensionProperties> exts(extCount);
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extCount, exts.data());
+    auto hasExt = [&](const char *name) {
+      for (const auto &e : exts)
+        if (std::strcmp(e.extensionName, name) == 0)
+          return true;
+      return false;
+    };
+    if (!hasExt(VK_EXT_MESH_SHADER_EXTENSION_NAME) ||
+        !hasExt(VK_KHR_SPIRV_1_4_EXTENSION_NAME) ||
+        !hasExt(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
+      vkDestroyInstance(instance, nullptr);
+      Error e = Error::make(ErrorCode::UnsupportedOperation,
+                            "device missing mesh-shader related extensions");
+      e.backend = "vulkan";
+      e.operation = "execute";
+      return e;
+    }
+    deviceExts.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    deviceExts.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+    deviceExts.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+  }
+
+  VkPhysicalDeviceMeshShaderFeaturesEXT enabledMeshFeatures{};
+  enabledMeshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+  if (wantMesh) {
+    enabledMeshFeatures.meshShader = VK_TRUE;
+    if (!req.taskSpv.empty())
+      enabledMeshFeatures.taskShader = VK_TRUE;
+  }
+
+  VkPhysicalDeviceDescriptorIndexingFeatures enabledIndexing{};
+  enabledIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  if (wantIndexing) {
+    enabledIndexing.runtimeDescriptorArray = VK_TRUE;
+    enabledIndexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  }
+
+  // Probe buffer-device-address feature (GL_EXT_buffer_reference).
+  VkPhysicalDeviceBufferDeviceAddressFeatures enabledBDAFeatures{};
+  enabledBDAFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  {
+    VkPhysicalDeviceFeatures2 bdaProbe{};
+    bdaProbe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    bdaProbe.pNext = &enabledBDAFeatures;
+    vkGetPhysicalDeviceFeatures2(physical, &bdaProbe);
+  }
+  const bool wantBDA = enabledBDAFeatures.bufferDeviceAddress == VK_TRUE;
+  if (wantBDA)
+    enabledBDAFeatures.bufferDeviceAddress = VK_TRUE;
+
+  // Probe inline-uniform-block feature (VK_EXT_inline_uniform_block).
+  VkPhysicalDeviceInlineUniformBlockFeatures enabledInlineFeatures{};
+  enabledInlineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INLINE_UNIFORM_BLOCK_FEATURES;
+  {
+    VkPhysicalDeviceFeatures2 inlineProbe{};
+    inlineProbe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    inlineProbe.pNext = &enabledInlineFeatures;
+    vkGetPhysicalDeviceFeatures2(physical, &inlineProbe);
+  }
+  const bool wantInlineUniform = enabledInlineFeatures.inlineUniformBlock == VK_TRUE;
+  if (wantInlineUniform) {
+    enabledInlineFeatures.inlineUniformBlock = VK_TRUE;
+    enabledInlineFeatures.descriptorBindingInlineUniformBlockUpdateAfterBind = VK_TRUE;
+    deviceExts.push_back(VK_EXT_INLINE_UNIFORM_BLOCK_EXTENSION_NAME);
+  }
 
   VkPhysicalDevicePerformanceQueryFeaturesKHR enabledPerfFeatures = perfSetup.features;
   VkPhysicalDeviceFeatures2 features2{};
@@ -167,9 +342,30 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   dci.pQueueCreateInfos = &qci;
   dci.enabledExtensionCount = static_cast<uint32_t>(deviceExts.size());
   dci.ppEnabledExtensionNames = deviceExts.empty() ? nullptr : deviceExts.data();
+  // Chain: features2 → [bda] → [inline] → [mesh] → [indexing] → [perf]
+  void *chain = nullptr;
   if (perfSetup.want) {
-    enabledPerfFeatures.pNext = nullptr;
-    features2.pNext = &enabledPerfFeatures;
+    enabledPerfFeatures.pNext = chain;
+    chain = &enabledPerfFeatures;
+  }
+  if (wantIndexing) {
+    enabledIndexing.pNext = chain;
+    chain = &enabledIndexing;
+  }
+  if (wantMesh) {
+    enabledMeshFeatures.pNext = chain;
+    chain = &enabledMeshFeatures;
+  }
+  if (wantInlineUniform) {
+    enabledInlineFeatures.pNext = chain;
+    chain = &enabledInlineFeatures;
+  }
+  if (wantBDA) {
+    enabledBDAFeatures.pNext = chain;
+    chain = &enabledBDAFeatures;
+  }
+  if (chain || perfSetup.want || wantIndexing || wantMesh || wantBDA || wantInlineUniform) {
+    features2.pNext = chain;
     dci.pNext = &features2;
     dci.pEnabledFeatures = nullptr;
   } else {
@@ -187,6 +383,10 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       devNote += " (pipelineStatisticsQuery)";
     if (perfSetup.want)
       devNote += " (+ VK_KHR_performance_query)";
+    if (wantIndexing)
+      devNote += " (+ descriptor_indexing)";
+    if (wantMesh)
+      devNote += " (+ mesh_shader)";
     steps.push_back(devNote);
   }
 
@@ -206,6 +406,29 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       return words.error();
     }
     steps.push_back("loaded compute SPIR-V: " + req.computeSpv.string());
+
+    // Reflect first: UBO / storage-image / multi-set → generic path; else legacy 3-SSBO.
+    {
+      auto cRefl = reflectSpirvModule(words.value(), SpirvReflectStage::Fragment);
+      if (!cRefl) {
+        cleanup();
+        return cRefl.error();
+      }
+      if (vulkanComputeNeedsGenericResources(cRefl.value())) {
+        auto ran = vulkanRunComputeGeneric(physical, device, queue, queueFamily, words.value(), req,
+                                           out);
+        if (!ran) {
+          cleanup();
+          return ran.error();
+        }
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physical, &props);
+        out.deviceName = props.deviceName;
+        cleanup();
+        out.power = power.stats();
+        return out;
+      }
+    }
 
     auto mod = createModule(device, words.value(), steps);
     if (!mod) {
@@ -291,7 +514,6 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         sizeof(float) * (isMatmul ? static_cast<VkDeviceSize>(K) * N : n);
     const VkDeviceSize bytesC =
         sizeof(float) * (isMatmul ? static_cast<VkDeviceSize>(M) * N : n);
-    const VkDeviceSize bytes = bytesC; // descriptor range helper for C-sized writes below
 
     std::vector<float> hostA(static_cast<size_t>(bytesA / sizeof(float)));
     std::vector<float> hostB(static_cast<size_t>(bytesB / sizeof(float)));
@@ -781,108 +1003,402 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       out.counters = presented.value().counters;
       logInfo("runtime", "Vulkan SPIR-V " + out.mode + (out.ok ? " OK" : " FAIL") + " on " +
                              out.deviceName + " (executed)");
+      out.power = power.stats();
       return out;
     }
 
     out.mode = "graphics_offscreen";
-    auto vWords = loadWords(req.vertexSpv);
-    auto fWords = loadWords(req.fragmentSpv);
-    if (!vWords) {
-      cleanup();
-      return vWords.error();
+    const bool useMeshPipeline = !req.meshSpv.empty();
+    std::optional<std::vector<uint32_t>> vWords;
+    if (!useMeshPipeline) {
+      auto vw = loadWords(req.vertexSpv);
+      if (!vw) {
+        cleanup();
+        return vw.error();
+      }
+      vWords = std::move(vw.value());
+      steps.push_back("loaded vertex SPIR-V: " + req.vertexSpv.string());
     }
+    auto fWords = loadWords(req.fragmentSpv);
     if (!fWords) {
       cleanup();
       return fWords.error();
     }
-    steps.push_back("loaded vertex SPIR-V: " + req.vertexSpv.string());
     steps.push_back("loaded fragment SPIR-V: " + req.fragmentSpv.string());
 
-    auto vMod = createModule(device, vWords.value(), steps);
-    if (!vMod) {
+    std::optional<std::vector<uint32_t>> gWords;
+    std::optional<std::vector<uint32_t>> tcWords;
+    std::optional<std::vector<uint32_t>> teWords;
+    std::optional<SpirvModuleReflection> gRefl;
+    std::optional<SpirvModuleReflection> tcRefl;
+    std::optional<SpirvModuleReflection> teRefl;
+    if (!req.geometrySpv.empty()) {
+      auto gw = loadWords(req.geometrySpv);
+      if (!gw) {
+        cleanup();
+        return gw.error();
+      }
+      gWords = std::move(gw.value());
+      steps.push_back("loaded geometry SPIR-V: " + req.geometrySpv.string());
+      auto gr = reflectSpirvModule(*gWords, SpirvReflectStage::Geometry);
+      if (!gr) {
+        cleanup();
+        return gr.error();
+      }
+      gRefl = std::move(gr.value());
+    }
+    if (!req.tessControlSpv.empty()) {
+      auto tw = loadWords(req.tessControlSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      tcWords = std::move(tw.value());
+      steps.push_back("loaded tesscontrol SPIR-V: " + req.tessControlSpv.string());
+      auto tr = reflectSpirvModule(*tcWords, SpirvReflectStage::TessControl);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      tcRefl = std::move(tr.value());
+    }
+    if (!req.tessEvalSpv.empty()) {
+      auto tw = loadWords(req.tessEvalSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      teWords = std::move(tw.value());
+      steps.push_back("loaded tesseval SPIR-V: " + req.tessEvalSpv.string());
+      auto tr = reflectSpirvModule(*teWords, SpirvReflectStage::TessEvaluation);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      teRefl = std::move(tr.value());
+    }
+
+    std::optional<std::vector<uint32_t>> meshWords;
+    std::optional<std::vector<uint32_t>> taskWords;
+    std::optional<SpirvModuleReflection> meshRefl;
+    std::optional<SpirvModuleReflection> taskRefl;
+    if (!req.meshSpv.empty()) {
+      auto mw = loadWords(req.meshSpv);
+      if (!mw) {
+        cleanup();
+        return mw.error();
+      }
+      meshWords = std::move(mw.value());
+      steps.push_back("loaded mesh SPIR-V: " + req.meshSpv.string());
+      auto mr = reflectSpirvModule(*meshWords, SpirvReflectStage::Mesh);
+      if (!mr) {
+        cleanup();
+        return mr.error();
+      }
+      meshRefl = std::move(mr.value());
+    }
+    if (!req.taskSpv.empty()) {
+      auto tw = loadWords(req.taskSpv);
+      if (!tw) {
+        cleanup();
+        return tw.error();
+      }
+      taskWords = std::move(tw.value());
+      steps.push_back("loaded task SPIR-V: " + req.taskSpv.string());
+      auto tr = reflectSpirvModule(*taskWords, SpirvReflectStage::Task);
+      if (!tr) {
+        cleanup();
+        return tr.error();
+      }
+      taskRefl = std::move(tr.value());
+    }
+
+    SpirvModuleReflection vReflValue{};
+    if (vWords) {
+      auto vRefl = reflectSpirvModule(*vWords, SpirvReflectStage::Vertex);
+      if (!vRefl) {
+        cleanup();
+        return vRefl.error();
+      }
+      vReflValue = std::move(vRefl.value());
+    }
+    auto fRefl = reflectSpirvModule(fWords.value(), SpirvReflectStage::Fragment);
+    if (!fRefl) {
       cleanup();
-      return vMod.error();
+      return fRefl.error();
+    }
+    SpirvExtraStageReflections extra{};
+    if (gRefl)
+      extra.geometry = &*gRefl;
+    if (tcRefl)
+      extra.tessControl = &*tcRefl;
+    if (teRefl)
+      extra.tessEvaluation = &*teRefl;
+    if (meshRefl)
+      extra.mesh = &*meshRefl;
+    if (taskRefl)
+      extra.task = &*taskRefl;
+    const SpirvModuleReflection gfxRefl =
+        mergeSpirvReflections(vReflValue, fRefl.value(), extra);
+    auto gfxRes = vulkanCreateGraphicsResources(physical, device, queue, queueFamily, gfxRefl, steps);
+    if (!gfxRes) {
+      cleanup();
+      return gfxRes.error();
+    }
+    VulkanGraphicsResources resources = std::move(gfxRes.value());
+
+    VkShaderModule vMod = VK_NULL_HANDLE;
+    if (vWords) {
+      auto vm = createModule(device, *vWords, steps);
+      if (!vm) {
+        vulkanDestroyGraphicsResources(device, resources);
+        cleanup();
+        return vm.error();
+      }
+      vMod = vm.value();
     }
     auto fMod = createModule(device, fWords.value(), steps);
     if (!fMod) {
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return fMod.error();
     }
-
-    VkPipelineLayoutCreateInfo plci{};
-    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    r = vkCreatePipelineLayout(device, &plci, nullptr, &layout);
-    if (r != VK_SUCCESS) {
+    VkShaderModule gMod = VK_NULL_HANDLE;
+    VkShaderModule tcMod = VK_NULL_HANDLE;
+    VkShaderModule teMod = VK_NULL_HANDLE;
+    VkShaderModule meshMod = VK_NULL_HANDLE;
+    VkShaderModule taskMod = VK_NULL_HANDLE;
+    auto failMods = [&](const Error &e) -> Error {
+      if (taskMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, taskMod, nullptr);
+      if (meshMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, meshMod, nullptr);
+      if (teMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, teMod, nullptr);
+      if (tcMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, tcMod, nullptr);
+      if (gMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, gMod, nullptr);
       vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
-      return vkError("vkCreatePipelineLayout failed", r);
+      return e;
+    };
+    if (gWords) {
+      auto gm = createModule(device, *gWords, steps);
+      if (!gm)
+        return failMods(gm.error());
+      gMod = gm.value();
     }
-    steps.push_back("vkCreatePipelineLayout");
+    if (tcWords) {
+      auto tm = createModule(device, *tcWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      tcMod = tm.value();
+    }
+    if (teWords) {
+      auto tm = createModule(device, *teWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      teMod = tm.value();
+    }
+    if (meshWords) {
+      auto mm = createModule(device, *meshWords, steps);
+      if (!mm)
+        return failMods(mm.error());
+      meshMod = mm.value();
+    }
+    if (taskWords) {
+      auto tm = createModule(device, *taskWords, steps);
+      if (!tm)
+        return failMods(tm.error());
+      taskMod = tm.value();
+    }
+    auto destroyShaderMods = [&]() {
+      if (taskMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, taskMod, nullptr);
+      if (meshMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, meshMod, nullptr);
+      if (teMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, teMod, nullptr);
+      if (tcMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, tcMod, nullptr);
+      if (gMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, gMod, nullptr);
+      vkDestroyShaderModule(device, fMod.value(), nullptr);
+      if (vMod != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, vMod, nullptr);
+    };
 
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format = VK_FORMAT_R8G8B8A8_UNORM;
-    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkPipelineLayout layout = resources.pipelineLayout;
 
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // `subpassInput` reads a render pass attachment, and an attachment cannot be written
+    // and read as an input in the same subpass. So a shader with subpass inputs gets
+    // `inputCount` primed attachments plus its own outputs: subpass 0 only clears the
+    // inputs, subpass 1 renders with the pipeline. Shaders without subpass inputs keep the
+    // single-attachment, single-subpass path.
+    //
+    // `outputCount` comes from the fragment shader's declared `Location`s. A shader writing
+    // several locations needs one attachment each: the render pass and the blend state must
+    // cover every location, because a fragment write to a location the pipeline does not
+    // bind as a colour attachment is undefined, not merely dropped.
+    const uint32_t inputCount = inputAttachmentCount(resources.inputAttachments);
+    const uint32_t outputCount = resources.reflection.colorOutputCount == 0
+                                     ? 1u
+                                     : resources.reflection.colorOutputCount;
+    if (outputCount > kMaxColorOutputs) {
+      return Error::make(ErrorCode::UnsupportedOperation,
+                         "fragment shader declares " + std::to_string(outputCount) +
+                             " colour outputs; this smoke pass supports at most " +
+                             std::to_string(kMaxColorOutputs));
+    }
+    const uint32_t outputAttachment = inputCount;
+    const uint32_t attachmentCount = inputCount + outputCount;
+    const uint32_t subpassIndex = inputCount > 0 ? 1u : 0u;
+    if (inputCount > 0) {
+      // Print the priming values: the frame the check sees is a function of these, so the
+      // run stays auditable about what data the subpass load actually read.
+      std::string primed;
+      for (uint32_t i = 0; i < inputCount; ++i) {
+        if (i)
+          primed += ",";
+        primed += std::to_string(inputAttachmentPrimeValue(i, inputCount));
+      }
+      steps.push_back("subpass inputs: " + std::to_string(inputCount) +
+                      " primed attachment(s) [grey=" + primed + "] + " +
+                      std::to_string(outputCount) + " output attachment(s)");
+    } else if (outputCount > 1) {
+      steps.push_back("MRT: " + std::to_string(outputCount) +
+                      " colour targets from fragment output locations");
+    }
 
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
+    std::vector<VkAttachmentDescription> attachments(attachmentCount);
+    for (VkAttachmentDescription &a : attachments) {
+      a.format = VK_FORMAT_R8G8B8A8_UNORM;
+      a.samples = VK_SAMPLE_COUNT_1_BIT;
+      a.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      a.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      a.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
+    std::vector<VkAttachmentReference> inputRefs(inputCount);
+    for (uint32_t i = 0; i < inputCount; ++i) {
+      // Inputs keep COLOR_ATTACHMENT_OPTIMAL: the descriptor image layout and the subpass
+      // 1 reference both name it, and nothing transitions it away before the render pass ends.
+      attachments[i].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      inputRefs[i].attachment = i;
+      inputRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // One reference per declared output location, so an MRT shader binds every location it
+    // writes instead of leaving the extras undefined.
+    std::vector<VkAttachmentReference> outputRefs(outputCount);
+    for (uint32_t i = 0; i < outputCount; ++i) {
+      outputRefs[i].attachment = outputAttachment + i;
+      outputRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
+    std::vector<VkSubpassDescription> subpasses(inputCount > 0 ? 2 : 1);
+    subpasses[subpassIndex].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpasses[subpassIndex].colorAttachmentCount = outputCount;
+    subpasses[subpassIndex].pColorAttachments = outputRefs.data();
+    if (inputCount > 0) {
+      // Priming subpass: colour attachments only so vkCmdBeginRenderPass clears them.
+      // No pipeline is created for it and the command buffer draws nothing in it.
+      subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+      subpasses[0].colorAttachmentCount = inputCount;
+      subpasses[0].pColorAttachments = inputRefs.data();
+      subpasses[1].inputAttachmentCount = inputCount;
+      subpasses[1].pInputAttachments = inputRefs.data();
+    }
+
+    std::vector<VkSubpassDependency> deps(inputCount > 0 ? 2 : 1);
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (inputCount > 0) {
+      // The clear that primes the inputs must be visible to the fragment shader's load.
+      deps[1].srcSubpass = 0;
+      deps[1].dstSubpass = 1;
+      deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+      deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    }
 
     VkRenderPassCreateInfo rpci{};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpci.attachmentCount = 1;
-    rpci.pAttachments = &colorAtt;
-    rpci.subpassCount = 1;
-    rpci.pSubpasses = &subpass;
-    rpci.dependencyCount = 1;
-    rpci.pDependencies = &dep;
+    rpci.attachmentCount = attachmentCount;
+    rpci.pAttachments = attachments.data();
+    rpci.subpassCount = static_cast<uint32_t>(subpasses.size());
+    rpci.pSubpasses = subpasses.data();
+    rpci.dependencyCount = static_cast<uint32_t>(deps.size());
+    rpci.pDependencies = deps.data();
     VkRenderPass renderPass = VK_NULL_HANDLE;
     r = vkCreateRenderPass(device, &rpci, nullptr, &renderPass);
     if (r != VK_SUCCESS) {
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      destroyShaderMods();
+      vulkanDestroyGraphicsResources(device, resources);
       cleanup();
       return vkError("vkCreateRenderPass failed", r);
     }
     steps.push_back("vkCreateRenderPass");
 
-    VkPipelineShaderStageCreateInfo stagesInfo[2]{};
-    stagesInfo[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stagesInfo[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stagesInfo[0].module = vMod.value();
-    stagesInfo[0].pName = "main";
-    stagesInfo[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stagesInfo[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stagesInfo[1].module = fMod.value();
-    stagesInfo[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stagesInfo[6]{};
+    uint32_t stageCount = 0;
+    auto addStage = [&](VkShaderStageFlagBits stage, VkShaderModule mod) {
+      stagesInfo[stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      stagesInfo[stageCount].stage = stage;
+      stagesInfo[stageCount].module = mod;
+      stagesInfo[stageCount].pName = "main";
+      ++stageCount;
+    };
+    if (useMeshPipeline) {
+      if (taskMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TASK_BIT_EXT, taskMod);
+      addStage(VK_SHADER_STAGE_MESH_BIT_EXT, meshMod);
+      addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fMod.value());
+      steps.push_back("mesh/task stages enabled in graphics pipeline");
+    } else {
+      addStage(VK_SHADER_STAGE_VERTEX_BIT, vMod);
+      if (tcMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, tcMod);
+      if (teMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, teMod);
+      if (gMod != VK_NULL_HANDLE)
+        addStage(VK_SHADER_STAGE_GEOMETRY_BIT, gMod);
+      addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fMod.value());
+      if (tcMod != VK_NULL_HANDLE || teMod != VK_NULL_HANDLE)
+        steps.push_back("tessellation stages enabled in graphics pipeline");
+      if (gMod != VK_NULL_HANDLE)
+        steps.push_back("geometry stage enabled in graphics pipeline");
+    }
 
     VkPipelineVertexInputStateCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    if (resources.hasVertexAttrs) {
+      vi.vertexBindingDescriptionCount = static_cast<uint32_t>(resources.vertexBindings.size());
+      vi.pVertexBindingDescriptions = resources.vertexBindings.data();
+      vi.vertexAttributeDescriptionCount = static_cast<uint32_t>(resources.vertexAttrs.size());
+      vi.pVertexAttributeDescriptions = resources.vertexAttrs.data();
+    }
 
+    const bool useTess = (tcMod != VK_NULL_HANDLE && teMod != VK_NULL_HANDLE);
     VkPipelineInputAssemblyStateCreateInfo ia{};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = useTess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineTessellationStateCreateInfo tess{};
+    tess.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tess.patchControlPoints = 3;
 
     VkViewport viewport{};
     const uint32_t extentW = std::max(1u, req.width);
@@ -911,146 +1427,277 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineColorBlendAttachmentState blendAtt{};
-    blendAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    // A vector, not a single state: the count has to match the subpass colour attachment
+    // count or the pipeline and render pass disagree about how many targets exist.
+    std::vector<VkPipelineColorBlendAttachmentState> blendAtts(outputCount);
+    for (VkPipelineColorBlendAttachmentState &b : blendAtts) {
+      b.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    }
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments = &blendAtt;
+    cb.attachmentCount = outputCount;
+    cb.pAttachments = blendAtts.data();
 
     VkGraphicsPipelineCreateInfo gpci{};
     gpci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    gpci.stageCount = 2;
+    gpci.stageCount = stageCount;
     gpci.pStages = stagesInfo;
-    gpci.pVertexInputState = &vi;
-    gpci.pInputAssemblyState = &ia;
+    gpci.pVertexInputState = useMeshPipeline ? nullptr : &vi;
+    gpci.pInputAssemblyState = useMeshPipeline ? nullptr : &ia;
+    gpci.pTessellationState = (!useMeshPipeline && useTess) ? &tess : nullptr;
     gpci.pViewportState = &vp;
     gpci.pRasterizationState = &rs;
     gpci.pMultisampleState = &ms;
     gpci.pColorBlendState = &cb;
     gpci.layout = layout;
     gpci.renderPass = renderPass;
-    gpci.subpass = 0;
+    gpci.subpass = subpassIndex;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline);
     if (r != VK_SUCCESS) {
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateGraphicsPipelines failed", r);
     }
     steps.push_back("vkCreateGraphicsPipelines");
 
-    // Offscreen color target
-    VkImageCreateInfo imgCi{};
-    imgCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imgCi.imageType = VK_IMAGE_TYPE_2D;
-    imgCi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imgCi.extent = {extentW, extentH, 1};
-    imgCi.mipLevels = 1;
-    imgCi.arrayLayers = 1;
-    imgCi.samples = VK_SAMPLE_COUNT_1_BIT;
-    imgCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imgCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage colorImage = VK_NULL_HANDLE;
-    r = vkCreateImage(device, &imgCi, nullptr, &colorImage);
-    if (r != VK_SUCCESS) {
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
-      cleanup();
-      return vkError("vkCreateImage failed", r);
+    PFN_vkCmdDrawMeshTasksEXT cmdDrawMeshTasksEXT = nullptr;
+    if (useMeshPipeline) {
+      cmdDrawMeshTasksEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(
+          vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksEXT"));
+      if (!cmdDrawMeshTasksEXT) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::UnsupportedOperation,
+                           "vkCmdDrawMeshTasksEXT not available");
+      }
     }
 
-    VkMemoryRequirements imgReq{};
-    vkGetImageMemoryRequirements(device, colorImage, &imgReq);
-    const uint32_t imgMemType =
-        findMemoryType(physical, imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (imgMemType == std::numeric_limits<uint32_t>::max()) {
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
-      cleanup();
-      return Error::make(ErrorCode::ResourceAllocationFailed, "no device-local memory for color image");
+    // Indirect draw command buffer: the smoke path always uses vkCmdDrawIndirect with a
+    // pre-filled VkDrawIndirectCommand so the indirect draw path is exercised.
+    VkBuffer indirectBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory indirectMem = VK_NULL_HANDLE;
+    if (!useMeshPipeline) {
+      VkDrawIndirectCommand drawCmd{};
+      drawCmd.vertexCount = resources.hasVertexAttrs ? resources.vertexCount : 3;
+      drawCmd.instanceCount = 1;
+      drawCmd.firstVertex = 0;
+      drawCmd.firstInstance = 0;
+      VkBufferCreateInfo indCi{};
+      indCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      indCi.size = sizeof(VkDrawIndirectCommand);
+      indCi.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+      indCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      r = vkCreateBuffer(device, &indCi, nullptr, &indirectBuffer);
+      if (r != VK_SUCCESS) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateBuffer (indirect) failed", r);
+      }
+      VkMemoryRequirements indReq{};
+      vkGetBufferMemoryRequirements(device, indirectBuffer, &indReq);
+      const uint32_t indMemType = findMemoryType(
+          physical, indReq.memoryTypeBits,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      if (indMemType == std::numeric_limits<uint32_t>::max()) {
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::ResourceAllocationFailed,
+                           "no host-visible memory for indirect buffer");
+      }
+      VkMemoryAllocateInfo indAi{};
+      indAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      indAi.allocationSize = indReq.size;
+      indAi.memoryTypeIndex = indMemType;
+      r = vkAllocateMemory(device, &indAi, nullptr, &indirectMem);
+      if (r != VK_SUCCESS) {
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkAllocateMemory (indirect) failed", r);
+      }
+      vkBindBufferMemory(device, indirectBuffer, indirectMem, 0);
+      void *indMapped = nullptr;
+      r = vkMapMemory(device, indirectMem, 0, sizeof(VkDrawIndirectCommand), 0, &indMapped);
+      if (r != VK_SUCCESS) {
+        vkFreeMemory(device, indirectMem, nullptr);
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkMapMemory (indirect) failed", r);
+      }
+      std::memcpy(indMapped, &drawCmd, sizeof(drawCmd));
+      vkUnmapMemory(device, indirectMem);
+      steps.push_back("vkCmdDrawIndirect (smoke)");
     }
-    VkMemoryAllocateInfo imgAi{};
-    imgAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    imgAi.allocationSize = imgReq.size;
-    imgAi.memoryTypeIndex = imgMemType;
-    VkDeviceMemory colorMem = VK_NULL_HANDLE;
-    r = vkAllocateMemory(device, &imgAi, nullptr, &colorMem);
-    if (r != VK_SUCCESS) {
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
-      cleanup();
-      return vkError("vkAllocateMemory (image) failed", r);
-    }
-    vkBindImageMemory(device, colorImage, colorMem, 0);
-    steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" + std::to_string(extentH));
 
-    VkImageViewCreateInfo viewCi{};
-    viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewCi.image = colorImage;
-    viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewCi.subresourceRange.levelCount = 1;
-    viewCi.subresourceRange.layerCount = 1;
-    VkImageView colorView = VK_NULL_HANDLE;
-    r = vkCreateImageView(device, &viewCi, nullptr, &colorView);
-    if (r != VK_SUCCESS) {
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
-      vkDestroyPipeline(device, pipeline, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
-      cleanup();
-      return vkError("vkCreateImageView failed", r);
+    // Offscreen targets: the primed subpass inputs first, then the real colour target at
+    // `outputAttachment` -- that one is the only image read back.
+    std::vector<VkImage> targetImages(attachmentCount, VK_NULL_HANDLE);
+    std::vector<VkDeviceMemory> targetMems(attachmentCount, VK_NULL_HANDLE);
+    std::vector<VkImageView> targetViews(attachmentCount, VK_NULL_HANDLE);
+    auto destroyTargetImages = [&]() {
+      for (VkImageView v : targetViews)
+        if (v)
+          vkDestroyImageView(device, v, nullptr);
+      for (VkDeviceMemory m : targetMems)
+        if (m)
+          vkFreeMemory(device, m, nullptr);
+      for (VkImage i : targetImages)
+        if (i)
+          vkDestroyImage(device, i, nullptr);
+      targetViews.assign(attachmentCount, VK_NULL_HANDLE);
+      targetMems.assign(attachmentCount, VK_NULL_HANDLE);
+      targetImages.assign(attachmentCount, VK_NULL_HANDLE);
+    };
+
+    for (uint32_t i = 0; i < attachmentCount; ++i) {
+      VkImageCreateInfo imgCi{};
+      imgCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      imgCi.imageType = VK_IMAGE_TYPE_2D;
+      imgCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+      imgCi.extent = {extentW, extentH, 1};
+      imgCi.mipLevels = 1;
+      imgCi.arrayLayers = 1;
+      imgCi.samples = VK_SAMPLE_COUNT_1_BIT;
+      imgCi.tiling = VK_IMAGE_TILING_OPTIMAL;
+      imgCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      r = vkCreateImage(device, &imgCi, nullptr, &targetImages[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateImage failed", r);
+      }
+
+      VkMemoryRequirements imgReq{};
+      vkGetImageMemoryRequirements(device, targetImages[i], &imgReq);
+      const uint32_t imgMemType =
+          findMemoryType(physical, imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      if (imgMemType == std::numeric_limits<uint32_t>::max()) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return Error::make(ErrorCode::ResourceAllocationFailed, "no device-local memory for color image");
+      }
+      VkMemoryAllocateInfo imgAi{};
+      imgAi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      imgAi.allocationSize = imgReq.size;
+      imgAi.memoryTypeIndex = imgMemType;
+      r = vkAllocateMemory(device, &imgAi, nullptr, &targetMems[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkAllocateMemory (image) failed", r);
+      }
+      vkBindImageMemory(device, targetImages[i], targetMems[i], 0);
+    }
+    if (inputCount > 0) {
+      steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" +
+                      std::to_string(extentH) + " (+" + std::to_string(inputCount) +
+                      " subpass input attachment(s))");
+    } else {
+      steps.push_back("created offscreen color image " + std::to_string(extentW) + "x" +
+                      std::to_string(extentH));
+    }
+
+    for (uint32_t i = 0; i < attachmentCount; ++i) {
+      VkImageViewCreateInfo viewCi{};
+      viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+      viewCi.image = targetImages[i];
+      viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+      viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      viewCi.subresourceRange.levelCount = 1;
+      viewCi.subresourceRange.layerCount = 1;
+      r = vkCreateImageView(device, &viewCi, nullptr, &targetViews[i]);
+      if (r != VK_SUCCESS) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return vkError("vkCreateImageView failed", r);
+      }
+    }
+
+    if (inputCount > 0) {
+      // The views exist now, so the deferred subpass-input descriptor writes can land.
+      const std::vector<VkImageView> inputViews(targetViews.begin(),
+                                                targetViews.begin() + inputCount);
+      auto wrote = vulkanWriteInputAttachmentDescriptors(device, resources, inputViews);
+      if (!wrote) {
+        destroyTargetImages();
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        vulkanDestroyGraphicsResources(device, resources);
+        destroyShaderMods();
+        cleanup();
+        return wrote.error();
+      }
+      steps.push_back("subpass input descriptors: " +
+                      std::to_string(resources.inputAttachments.size()) + " binding(s) -> " +
+                      std::to_string(inputCount) + " attachment view(s)");
     }
 
     VkFramebufferCreateInfo fbCi{};
     fbCi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbCi.renderPass = renderPass;
-    fbCi.attachmentCount = 1;
-    fbCi.pAttachments = &colorView;
+    fbCi.attachmentCount = attachmentCount;
+    fbCi.pAttachments = targetViews.data();
     fbCi.width = extentW;
     fbCi.height = extentH;
     fbCi.layers = 1;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     r = vkCreateFramebuffer(device, &fbCi, nullptr, &framebuffer);
     if (r != VK_SUCCESS) {
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateFramebuffer failed", r);
     }
     steps.push_back("vkCreateFramebuffer");
 
-    // Staging buffer for pixel readback
-    const VkDeviceSize stagingBytes = static_cast<VkDeviceSize>(extentW) * extentH * 4;
+    // Staging buffer for pixel readback. One contiguous region per colour target, so every
+    // declared output location gets read back instead of just the first.
+    const VkDeviceSize imageBytes = static_cast<VkDeviceSize>(extentW) * extentH * 4;
+    const VkDeviceSize stagingBytes = imageBytes * outputCount;
     VkBufferCreateInfo bufCi{};
     bufCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufCi.size = stagingBytes;
@@ -1060,14 +1707,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     r = vkCreateBuffer(device, &bufCi, nullptr, &staging);
     if (r != VK_SUCCESS) {
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateBuffer (staging) failed", r);
     }
@@ -1079,14 +1723,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (hostMemType == std::numeric_limits<uint32_t>::max()) {
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return Error::make(ErrorCode::ResourceAllocationFailed, "no host-visible memory for staging");
     }
@@ -1099,14 +1740,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     if (r != VK_SUCCESS) {
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return vkError("vkAllocateMemory (staging) failed", r);
     }
@@ -1122,14 +1760,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       vkFreeMemory(device, stagingMem, nullptr);
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
       return vkError("vkCreateCommandPool failed", r);
     }
@@ -1241,21 +1876,43 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
         if (withPerf)
           vulkanPerfCmdBegin(cmd, perf);
 
-        VkClearValue clear{};
-        clear.color.float32[3] = 1.0f;
+        // One clear per attachment: the subpass inputs get the priming ramp, the colour
+        // outputs keep the usual opaque black. `clearValueCount` has to cover every
+        // attachment the render pass declares, so build the vector unconditionally -- with
+        // MRT there is more than one even when there are no subpass inputs.
+        std::vector<VkClearValue> clears(attachmentCount);
+        for (uint32_t i = 0; i < inputCount; ++i) {
+          const float v = inputAttachmentPrimeValue(i, inputCount);
+          clears[i].color.float32[0] = v;
+          clears[i].color.float32[1] = v;
+          clears[i].color.float32[2] = v;
+          clears[i].color.float32[3] = 1.0f;
+        }
+        for (uint32_t i = inputCount; i < attachmentCount; ++i)
+          clears[i].color.float32[3] = 1.0f;
+
         VkRenderPassBeginInfo rpBegin{};
         rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rpBegin.renderPass = renderPass;
         rpBegin.framebuffer = framebuffer;
         rpBegin.renderArea.extent = {extentW, extentH};
-        rpBegin.clearValueCount = 1;
-        rpBegin.pClearValues = &clear;
+        rpBegin.clearValueCount = static_cast<uint32_t>(clears.size());
+        rpBegin.pClearValues = clears.data();
 
         vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        if (inputCount > 0)
+          vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vulkanCmdBindGraphicsResources(cmd, resources);
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, queryPool, 1);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        if (useMeshPipeline) {
+          cmdDrawMeshTasksEXT(cmd, 1, 1, 1);
+        } else if (indirectBuffer) {
+          vkCmdDrawIndirect(cmd, indirectBuffer, 0, 1, sizeof(VkDrawIndirectCommand));
+        } else {
+          vkCmdDraw(cmd, resources.hasVertexAttrs ? resources.vertexCount : 3, 1, 0, 0);
+        }
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, queryPool, 2);
         vkCmdEndRenderPass(cmd);
@@ -1270,12 +1927,15 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
           vkCmdEndQuery(cmd, statsPool, 0);
 
         if (lastPass && withReadback) {
-          VkBufferImageCopy copy{};
-          copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-          copy.imageSubresource.layerCount = 1;
-          copy.imageExtent = {extentW, extentH, 1};
-          vkCmdCopyImageToBuffer(cmd, colorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1,
-                                 &copy);
+          for (uint32_t t = 0; t < outputCount; ++t) {
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = imageBytes * t;
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = {extentW, extentH, 1};
+            vkCmdCopyImageToBuffer(cmd, targetImages[outputAttachment + t],
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
+          }
         }
         if (lastPass && withTimestamps && queryPool)
           vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 4);
@@ -1380,17 +2040,18 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
       if (queryPool)
         vkDestroyQueryPool(device, queryPool, nullptr);
       vkDestroyCommandPool(device, cmdPool, nullptr);
+      if (indirectMem)
+        vkFreeMemory(device, indirectMem, nullptr);
+      if (indirectBuffer)
+        vkDestroyBuffer(device, indirectBuffer, nullptr);
       vkFreeMemory(device, stagingMem, nullptr);
       vkDestroyBuffer(device, staging, nullptr);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
-      vkDestroyImageView(device, colorView, nullptr);
-      vkFreeMemory(device, colorMem, nullptr);
-      vkDestroyImage(device, colorImage, nullptr);
+      destroyTargetImages();
       vkDestroyPipeline(device, pipeline, nullptr);
       vkDestroyRenderPass(device, renderPass, nullptr);
-      vkDestroyPipelineLayout(device, layout, nullptr);
-      vkDestroyShaderModule(device, fMod.value(), nullptr);
-      vkDestroyShaderModule(device, vMod.value(), nullptr);
+      vulkanDestroyGraphicsResources(device, resources);
+      destroyShaderMods();
       cleanup();
     };
 
@@ -1434,25 +2095,121 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     void *mapped = nullptr;
     r = vkMapMemory(device, stagingMem, 0, stagingBytes, 0, &mapped);
     if (r == VK_SUCCESS && mapped) {
-      const auto *px = static_cast<const uint8_t *>(mapped);
-      const uint32_t cx = extentW / 2;
-      const uint32_t cy = extentH / 2;
-      const size_t off = (static_cast<size_t>(cy) * extentW + cx) * 4;
-      out.centerR = px[off + 0];
-      out.centerG = px[off + 1];
-      out.centerB = px[off + 2];
-      out.centerA = px[off + 3];
+      const auto *px = static_cast<const std::uint8_t *>(mapped);
+      const size_t targetBytes = static_cast<size_t>(imageBytes);
+      const size_t frameBytes = static_cast<size_t>(stagingBytes);
+      const std::vector<std::uint8_t> frame1(px, px + frameBytes);
+      vkUnmapMemory(device, stagingMem);
+      mapped = nullptr;
+
+      // Target 0 fills the single-target result fields; every target is checked, so an MRT
+      // shader only passes when all of its declared output locations were really written.
+      out.colorTargetsChecked = outputCount;
+      std::uint8_t center[4] = {0, 0, 0, 0};
+      frameCenterPixel(frame1.data(), extentW, extentH, center);
+      out.centerR = center[0];
+      out.centerG = center[1];
+      out.centerB = center[2];
+      out.centerA = center[3];
       out.pixelChecked = true;
       steps.push_back("readback center pixel rgba=(" + std::to_string(out.centerR) + "," +
                       std::to_string(out.centerG) + "," + std::to_string(out.centerB) + "," +
                       std::to_string(out.centerA) + ")");
-      out.ok = (out.centerR | out.centerG | out.centerB) != 0;
-      if (!out.ok)
-        steps.push_back("FAIL: center pixel still black (draw may not have covered center)");
-      vkUnmapMemory(device, stagingMem);
+
+      // Re-submit and read back a second time to confirm the draw reproduces.
+      std::vector<std::uint8_t> frame2;
+      if (auto again = recordAndSubmit(false, true, false)) {
+        void *mapped2 = nullptr;
+        if (vkMapMemory(device, stagingMem, 0, stagingBytes, 0, &mapped2) == VK_SUCCESS &&
+            mapped2) {
+          const auto *p2 = static_cast<const std::uint8_t *>(mapped2);
+          frame2.assign(p2, p2 + frameBytes);
+          vkUnmapMemory(device, stagingMem);
+        }
+      }
+      if (frame2.empty())
+        steps.push_back("warning: second readback unavailable; determinism check skipped");
+
+      // Thin geometry (lines/points/mesh) legitimately covers a tiny fraction of the
+      // frame, so the coverage and colour-variety bars are relaxed for those stages.
+      // The reported coverage percentage still makes that sparsity visible.
+      const bool thinGeometry =
+          gMod != VK_NULL_HANDLE || tcMod != VK_NULL_HANDLE || meshMod != VK_NULL_HANDLE;
+      FrameCheckConfig cfg;
+      if (thinGeometry) {
+        cfg.minCoveragePercent = 0.0;
+        cfg.minDistinctColors = 1;
+      }
+
+      const auto targetName = [&](uint32_t t) -> std::string {
+        if (outputCount <= 1)
+          return {};
+        return " target " + std::to_string(t);
+      };
+
+      // Every colour target gets its own determinism diff and frame check; `out.ok` is the
+      // conjunction, so a shader whose second target stayed black fails the run.
+      bool allOk = true;
+      for (uint32_t t = 0; t < outputCount; ++t) {
+        const std::uint8_t *t1 = frame1.data() + targetBytes * t;
+        const std::uint8_t *t2 =
+            frame2.empty() ? nullptr : frame2.data() + targetBytes * t;
+
+        if (t > 0) {
+          std::uint8_t c[4] = {0, 0, 0, 0};
+          frameCenterPixel(t1, extentW, extentH, c);
+          steps.push_back("readback" + targetName(t) + " center pixel rgba=(" +
+                          std::to_string(c[0]) + "," + std::to_string(c[1]) + "," +
+                          std::to_string(c[2]) + "," + std::to_string(c[3]) + ")");
+        }
+
+        if (t2) {
+          // compareMask is RGB-only by default: shaders that assign just `.rgb` leave the
+          // alpha output component undefined, and drivers fill it with register garbage,
+          // so alpha divergence between two identical draws proves nothing. RGB still
+          // catches real divergence -- ssao and terraintessellation fail this way.
+          const FrameDiff diff = diffFrames(t1, t2, targetBytes, extentW, extentH, cfg);
+          if (diff.hasDifference)
+            steps.push_back("determinism" + targetName(t) + ": " +
+                            std::to_string(diff.differingTexels) + " differing texels (" +
+                            std::to_string(static_cast<int>(diff.percentDiffering + 0.5)) +
+                            "%), max channel delta " + std::to_string(diff.maxChannelDelta) +
+                            ", first at (" + std::to_string(diff.firstX) + "," +
+                            std::to_string(diff.firstY) + ")");
+        }
+
+        const FrameCheckResult check =
+            checkFrame(t1, targetBytes, extentW, extentH, cfg, t2, frame2.empty() ? 0
+                                                                                   : targetBytes);
+        allOk = allOk && check.ok;
+        steps.push_back("frame check" + targetName(t) + ": " + check.reason);
+        if (!check.ok) {
+          steps.push_back("FAIL: colour target " + std::to_string(t) + " of " +
+                          std::to_string(outputCount) +
+                          " failed evidence checks (coverage/colours/determinism)");
+        }
+      }
+      out.ok = allOk;
+      if (!allOk) {
+        // Disambiguate the two ways a frame can be blank using the occlusion query:
+        // samples passed with no visible output means the shader ran but wrote nothing
+        // (e.g. cleared/discarded colour); no samples means the geometry never covered.
+        if (out.counters.occlusionAvailable) {
+          if (out.counters.occlusionSamplesPassed > 0 && outputCount == 1)
+            steps.push_back("diagnosis: " + std::to_string(out.counters.occlusionSamplesPassed) +
+                            " occlusion samples passed, so geometry rasterised but produced no "
+                            "visible colour (fragment shader wrote black or discarded)");
+          else if (out.counters.occlusionSamplesPassed == 0)
+            steps.push_back("diagnosis: 0 occlusion samples passed -- geometry did not cover the "
+                            "frame at all");
+        }
+        steps.push_back("FAIL: rendered frame failed evidence checks (coverage/colours/determinism)");
+      }
     } else {
-      steps.push_back("warning: could not map staging for pixel check");
-      out.ok = true;
+      // Never auto-pass: a failed readback means we have no evidence the draw worked.
+      out.ok = false;
+      steps.push_back("FAIL: could not map staging memory for pixel check (vkMapMemory rc=" +
+                      std::to_string(static_cast<int>(r)) + ")");
     }
 
     vulkanDestroyPerfQuerySession(device, perf);
@@ -1466,14 +2223,11 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
     vkFreeMemory(device, stagingMem, nullptr);
     vkDestroyBuffer(device, staging, nullptr);
     vkDestroyFramebuffer(device, framebuffer, nullptr);
-    vkDestroyImageView(device, colorView, nullptr);
-    vkFreeMemory(device, colorMem, nullptr);
-    vkDestroyImage(device, colorImage, nullptr);
+    destroyTargetImages();
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
-    vkDestroyPipelineLayout(device, layout, nullptr);
-    vkDestroyShaderModule(device, fMod.value(), nullptr);
-    vkDestroyShaderModule(device, vMod.value(), nullptr);
+    vulkanDestroyGraphicsResources(device, resources);
+    destroyShaderMods();
     steps.push_back("cleanup graphics objects");
   }
 
@@ -1481,6 +2235,7 @@ Expected<VulkanSmokeResult> vulkanSmokeSpirv(const VulkanSmokeRequest &req) {
   steps.push_back("vkDestroyDevice + vkDestroyInstance");
   logInfo("runtime", "Vulkan SPIR-V " + out.mode + (out.ok ? " OK" : " FAIL") + " on " +
                          out.deviceName + (out.executed ? " (executed)" : ""));
+  out.power = power.stats();
   return out;
 }
 

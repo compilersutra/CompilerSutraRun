@@ -1,0 +1,3 @@
+# Corpus compile: debugprintf/toon.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/debugprintf/toon.vert -o %t.spv

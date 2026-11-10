@@ -1,0 +1,3 @@
+# Corpus compile: debugutils/toon.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/debugutils/toon.frag -o %t.spv

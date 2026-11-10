@@ -1,0 +1,3 @@
+# Corpus compile: distancefieldfonts/bitmap.vert
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/distancefieldfonts/bitmap.vert -o %t.spv

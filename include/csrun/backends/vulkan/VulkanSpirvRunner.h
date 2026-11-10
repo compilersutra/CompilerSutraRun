@@ -9,6 +9,7 @@
 
 #include "csrun/benchmark/Timing.h"
 #include "csrun/benchmark/PipelineStats.h"
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/benchmark/VendorCountersMode.h"
 #include "csrun/compiler/SpirvToolchain.h"
 #include "csrun/core/Expected.h"
@@ -26,6 +27,17 @@ struct VulkanSmokeRequest {
   std::filesystem::path computeSpv;
   std::filesystem::path vertexSpv;
   std::filesystem::path fragmentSpv;
+  std::filesystem::path geometrySpv; // optional
+  std::filesystem::path tessControlSpv; // optional
+  std::filesystem::path tessEvalSpv; // optional
+  std::filesystem::path meshSpv; // optional (replaces vertex)
+  std::filesystem::path taskSpv; // optional (with mesh)
+  std::filesystem::path raygenSpv; // optional RT
+  std::filesystem::path closestHitSpv; // optional RT
+  std::filesystem::path missSpv; // optional RT
+  std::vector<std::filesystem::path> callableSpv; // optional RT
+  std::optional<std::filesystem::path> anyHitSpv; // optional RT
+  std::optional<std::filesystem::path> intersectionSpv; // optional RT
   /// nullopt = auto-pick (prefer perf_query / RADV); set to force a physical index.
   std::optional<std::uint32_t> deviceIndex;
   /// When true (graphics): real Vulkan WSI present (Xlib surface + swapchain).
@@ -60,12 +72,16 @@ struct VulkanSmokeResult {
   std::vector<double> samplesMs;
   TimingSource timingSource = TimingSource::Unknown;
   PipelineStats counters;
+  PowerStats power;
   bool pixelChecked = false;
   bool computeChecked = false;
   std::uint8_t centerR = 0;
   std::uint8_t centerG = 0;
   std::uint8_t centerB = 0;
   std::uint8_t centerA = 0;
+  /// Colour targets whose readback was checked. 1 for a single-target shader; an MRT
+  /// shader is only `ok` when every target passed its own frame check.
+  std::uint32_t colorTargetsChecked = 0;
   std::uint32_t framesPresented = 0;
 };
 

@@ -183,7 +183,7 @@ GLSL (.glsl compute)
 
 ---
 
-## M12 — Vulkan workload coverage *(planned)*
+## M12 — Vulkan workload coverage *(active)*
 
 Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond the in-tree examples.
 
@@ -191,10 +191,88 @@ Grow how much real-world Vulkan/GLSL work `csrun` can compile and execute beyond
 |-------------|--------|
 | Broader shader / workload intake | Public and in-house GLSL → SPIR-V paths |
 | Compile vs execute coverage | Clear report of what builds vs what runs on GPU |
-| Layout / feature growth | Extra descriptor / resource patterns as needed |
+| Layout / feature growth | Multi-set descriptors done; more patterns via `tests/lit/todo/` |
 | Regression gate | In-tree Vulkan examples keep PASS |
+| Evidence-based render check | `checkFrame` proves visible output, not just "did not crash" |
 
 **Exit:** documented coverage goals + measurable improvement in shaders/`csrun` can run end-to-end.
+
+Current breadth baseline (`tools/csrun-breadth`, RADV/GFX1200): **84 PASS / 11 FAIL / 0 SKIP**
+of 95 external corpus shaders. Remaining gaps, in the order they block coverage:
+
+| Gap | Samples | Root cause |
+|-----|---------|-----------|
+| `FAIL_BLACK` | 6 | Scene data, not missing capability. Each is one output location with 0–3 sampled images; the smoke pass binds a shared white texture and primes UBOs from the reflected layout, which is not enough to light a scene. `deferred` is the clearest case: `ambient` is `0.0` in the shader and the light UBO is zeroed, so `atten = radius/(dist²+1) = 0` and the frame is `(0,0,0,255)` **by arithmetic** — the run log shows `OCCLUSION=4096` and `FS/PS=4096`, so the draw ran and the shader wrote. `pbrbasic`, `offscreen`, `displacement`, `ssao`, `terraintessellation` are the same shape |
+| `FAIL_OTHER` | 4 | `raytracinggltf` needs real glTF geometry and a runtime texture array (its any-hit shader indexes a node buffer by `gl_GeometryIndexEXT`); the other three are ray-tracing samples that need scene data |
+| Descriptor kinds | 1 | acceleration-structure / ray-query bindings |
+| `FAIL_COMPUTE_RES` | 1 | compute resource binding gap |
+| glslang | 1 | `descriptorheapuntyped` needs a newer toolchain |
+
+`FAIL_STAGE` is closed. The ray-tracing smoke path builds its pipeline from the stages a
+workload declares instead of a fixed raygen + miss + closest-hit triple, so callable,
+any-hit and intersection shaders are bound and run rather than rejected up front. A
+declared-but-unbound stage is a real shader that never runs, which is not the same as a
+workload that omits it.
+
+A blank frame is only a coverage bug when the workload could have produced colour. These
+six are not evidence of a runner defect, and inventing light positions to turn them green
+would be fabricating the result, so they stay FAIL with the data requirement stated.
+
+`buffer_device_address` is now supported: `SpirvReflect` detects `PhysicalStorageBuffer`
+pointers in push constants (`GL_EXT_buffer_reference`), the graphics device enables
+`bufferDeviceAddress`, and the smoke pass creates a device buffer filled with an identity
+matrix and pushes its real device address into the push-constant block. The `cube` sample
+passes with `OCCLUSION=1352` and `frame check: coverage 33.008%, 252 distinct colours, stable`.
+
+`indirect_draw` is now supported: the smoke path always uses `vkCmdDrawIndirect` with a
+pre-filled `VkDrawIndirectCommand` buffer, so the indirect draw path is exercised for every
+graphics workload. The `indirectdraw` sample passes with `OCCLUSION=340` and
+`frame check: coverage 8.301%, 1 distinct colours, stable`.
+
+`inline_uniform` is now supported: `SpirvReflect` classifies small uniform blocks (≤256 bytes)
+as `InlineUniformBlock`, and the smoke path binds them with
+`VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK` via `VkWriteDescriptorSetInlineUniformBlock`.
+The `pbr` sample passes with `OCCLUSION=1352` and
+`frame check: coverage 22.437%, 11 distinct colours, stable`.
+
+`subpassInput` is reflected as its own descriptor kind (carrying `InputAttachmentIndex`)
+and bound as `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`, so `inputattachments`, `subpasses`,
+and `dynamicrenderinglocalread` all execute. An attachment cannot be written and read as
+an input in one subpass, so the smoke render pass primes one attachment per declared input
+index in subpass 0 and renders the real output to an extra attachment in subpass 1.
+
+The primed values are a documented mid-grey ramp (`0.25 + 0.5·(i+1)/n`), printed in the run
+steps — placeholder data, not a G-buffer. What the tests prove is that the subpass load
+happened and the shader composed it: `subpasses` composites input 2 with a 0.05 ambient
+factor and lands on 10/255, `dynamicrenderinglocalread` uses 0.15 and lands on 29/255, both
+matching `0.75 × factor` for attachment 2's prime value. A zero or garbage read would not
+produce those numbers.
+
+Smoke defaults fill uniform blocks from the *reflected* matrix layout, not from a
+64-byte-granularity guess. `SpirvReflect` flattens every matrix in a block to an absolute
+offset, walking nested structs and expanding array elements. This matters: `gears` puts
+`model[3]` after a `lightpos` vec4 (so `model[0]` starts at byte 144) and `texturearray`
+puts `Instance{ mat4 model; … } instance[8]` after two mat4s — the old heuristic left
+those model matrices zero, the geometry collapsed, and both drew nothing.
+
+Determinism is judged on RGB only. A shader that assigns just `.rgb` leaves the alpha
+output component undefined per SPIR-V, and RADV fills it with register garbage — two
+identical draws differed on 14–18% of texels in alpha alone, which says nothing about the
+draw. See `FrameCheckConfig::compareMask`.
+
+Multiple render targets are sized from reflection rather than assumed. `SpirvReflect`
+reports `colorOutputCount` — the highest `Location` on a fragment output, plus one — and
+the smoke pass builds that many colour attachments in the render pass, the framebuffer, the
+blend state, the clear values, and the readback. Every target is read back and frame-checked
+individually, and `ok` is the conjunction.
+
+This was a false green, not a missing feature. `deferred_mrt` passed while running
+`mrt.frag` against a single-attachment pipeline: locations 1 and 2 were never bound, and a
+fragment write to an unbound colour location is undefined rather than harmlessly dropped.
+Reverting just the blend-state count reproduces it — targets 1 and 2 come back as pure clear
+black and the run now fails with `colour target 1 of 3 failed evidence checks`. The test now
+reports `PASS (vkCmdDraw + pixel readback x3)` with per-target coverage, so all three
+location writes are covered by evidence instead of one of them.
 
 Tracking: [milestone/13](https://github.com/compilersutra/CompilerSutraRun/milestone/13) · [issue #2](https://github.com/compilersutra/CompilerSutraRun/issues/2)
 
@@ -260,11 +338,13 @@ Prompt **Phase 8**. Only after native backends are real.
 
 ```text
 Done     Vulkan (SPIR-V) + .comp/.vert/.frag → .spv smoke
+Done     OpenCL (ICD) + HIP (hiprtc) — vector_add
+Done     OpenGL (EGL headless, GL 4.3 compute) — vector_add
 Active   Vulkan SPIR-V depth (counters / timing)
-Planned  M12 Vulkan workload coverage
+Active   M12 Vulkan workload coverage
 Next     CUDA (PTX) → --all
-Then     D3D12 (DXIL) → Metal → HIP → OpenCL
-Then     OpenGL + OpenGL ES (pre-Vulkan Linux / mobile)
+Then     D3D12 (DXIL) → Metal
+Then     OpenGL ES (pre-Vulkan Linux / mobile)
 Then     WebGPU → CPU
 Later    MLIR/LLVM orchestration
 Always   integrate mature toolchains; never fake backends

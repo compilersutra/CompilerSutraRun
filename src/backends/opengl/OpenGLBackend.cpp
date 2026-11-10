@@ -1,5 +1,6 @@
 #include "csrun/backends/opengl/OpenGLBackend.h"
 
+#include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
@@ -283,6 +284,8 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
 
+  PowerSampler power;
+
   const GLsizeiptr bytes = static_cast<GLsizeiptr>(n * sizeof(float));
   GLuint buffers[3] = {};
   gl.GenBuffers(3, buffers);
@@ -363,6 +366,7 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
   RunResult result = fillVectorAddResult(workload, device, BackendType::OpenGL,
                                          "glsl-opengl-driver", options, samples, timingSource,
                                          host.reference, host.output);
+  result.power = power.stats();
 
   if (query)
     gl.DeleteQueries(1, &query);

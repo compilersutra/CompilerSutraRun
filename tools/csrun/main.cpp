@@ -37,6 +37,13 @@ void printTextResult(const csrun::RunResult &r) {
   std::cout << "Compiler:    " << r.compilerName << '\n';
   std::cout << "Timing:      median=" << r.timing.medianMs << " ms"
             << " source=" << csrun::toString(r.timing.source) << '\n';
+  if (r.power.available)
+    std::cout << "Power:       avg=" << r.power.avgWatts << " W"
+              << " idle=" << r.power.idleWatts << " W"
+              << " active_avg=" << r.power.activeAvgWatts << " W"
+              << " energy=" << r.power.energyJoules << " J"
+              << " active_energy=" << r.power.energyActiveJoules << " J"
+              << " source=" << r.power.source << " (" << r.power.device << ")\n";
   if (r.counters.available || r.counters.occlusionAvailable || r.counters.gpuTimestampAvailable ||
       r.counters.hostRecordMs > 0.0 || r.counters.hostSubmitMs > 0.0 ||
       r.counters.hostQueueWaitMs > 0.0 || !r.counters.vendor.empty() ||
@@ -158,11 +165,18 @@ int main(int argc, char **argv) {
       std::cerr << smoke.error().toString() << '\n';
       return 1;
     }
-    std::cout << "Vulkan SPIR-V smoke: PASS\n";
-    std::cout << "device: " << smoke.value().deviceName << '\n';
-    std::cout << "mode:   " << smoke.value().mode << '\n';
-    for (const auto &s : smoke.value().steps)
+    const auto &smokeResult = smoke.value();
+    // The verdict must reflect the evidence checks, not merely "it ran". A render that
+    // failed validation is a failure even though the pipeline executed without error.
+    std::cout << "Vulkan SPIR-V smoke: " << (smokeResult.ok ? "PASS" : "FAIL") << '\n';
+    std::cout << "device: " << smokeResult.deviceName << '\n';
+    std::cout << "mode:   " << smokeResult.mode << '\n';
+    for (const auto &s : smokeResult.steps)
       std::cout << "  - " << s << '\n';
+    if (!smokeResult.ok) {
+      std::cerr << "smoke validation failed: rendered output did not pass evidence checks\n";
+      return 1;
+    }
     return 0;
 #else
     std::cerr << "UNAVAILABLE: Vulkan backend not built\n";

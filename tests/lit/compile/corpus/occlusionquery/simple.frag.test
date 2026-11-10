@@ -1,0 +1,3 @@
+# Corpus compile: occlusionquery/simple.frag
+# REQUIRES: glslang, corpus
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/occlusionquery/simple.frag -o %t.spv

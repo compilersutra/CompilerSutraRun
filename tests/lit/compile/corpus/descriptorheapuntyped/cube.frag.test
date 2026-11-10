@@ -1,0 +1,4 @@
+# Corpus compile: descriptorheapuntyped/cube.frag
+# REQUIRES: glslang, corpus
+# XFAIL: *
+# RUN: %csrun --compile-spv %repo/external/shader-corpus/Vulkan/shaders/glsl/descriptorheapuntyped/cube.frag -o %t.spv
