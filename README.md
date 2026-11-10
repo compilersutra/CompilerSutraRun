@@ -125,6 +125,15 @@ prompt/            product briefs (archived)
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/development.md`](docs/development.md).
 
+## Team & thanks
+
+Workshop paper draft and artifact live under
+[`papers/csrun/`](papers/csrun/) (PDF: [`v2/main.pdf`](papers/csrun/v2/main.pdf)).
+
+Thanks to [@AdityaT11](https://github.com/AdityaT11) and **Sayu** for the
+collaboration on this work — please review the paper and artifact **as a team**
+before we treat the draft as submission-ready.
+
 ## Security
 
 See [`SECURITY.md`](SECURITY.md).
