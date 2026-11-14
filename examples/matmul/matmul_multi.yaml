@@ -1,0 +1,15 @@
+name: matmul
+operation: matmul
+dimensions:
+  M: 256
+  N: 256
+  K: 256
+dtype:
+  input: fp32
+  output: fp32
+execution:
+  warmup: 5
+  iterations: 20
+validation:
+  enabled: true
+  tolerance: 1.0e-3

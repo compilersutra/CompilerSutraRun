@@ -32,7 +32,7 @@ export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
 ./experiments/scripts/smoke_dual_gpu.sh experiments/raw/amd-$(date +%Y%m%d)
 ```
 
-Latest archived batch: `experiments/raw/amd-20261114/` (8/8 vector_add Mode B).
+Latest archived batch: `experiments/raw/amd-20261114/` (8/8 vector_add Mode B + multi-API matmul).
 
 ## Timing interpretation
 
@@ -46,6 +46,10 @@ Latest archived batch: `experiments/raw/amd-20261114/` (8/8 vector_add Mode B).
 | Workload | Vulkan | OpenGL | OpenCL | HIP |
 |----------|--------|--------|--------|-----|
 | `vector_add` | yes | yes | yes | yes |
-| `matmul` (SPIR-V) | yes (both GPUs) | — | — | — |
+| `matmul` (`operation: matmul`) | — | yes | yes | yes |
+| `matmul` SPIR-V (`operation: spirv`) | yes | — | — | — |
 
-Multi-API matmul remains a follow-on under M13.
+```bash
+./build/bin/csrun examples/matmul/matmul_multi.yaml --backend opencl --device-index 0
+./build/bin/csrun examples/matmul/matmul.yaml --backend vulkan --device-index 0
+```

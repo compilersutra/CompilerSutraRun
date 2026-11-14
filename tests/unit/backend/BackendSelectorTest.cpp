@@ -6,6 +6,8 @@
 #include "csrun/runtime/PlatformRuntime.h"
 #include "csrun/workload/Workload.h"
 
+#include <optional>
+
 TEST(BackendSelectorTest, ForcedUnavailableBackendReturnsError) {
   auto reg = csrun::createDefaultBackendRegistry();
   csrun::BackendSelector selector(reg);
@@ -57,16 +59,17 @@ TEST(BackendRegistryTest, StubsReportUnavailableNotSuccess) {
 
 TEST(PlatformRuntimeTest, InvalidDeviceIndexFailsClosed) {
   csrun::PlatformRuntime runtime;
-  // Only meaningful when at least one real backend is available; if none, skip.
+  // Use an *available* backend. Forcing Vulkan on CI hosts where it is only a
+  // stub yields BackendUnavailable before device-index is checked.
   auto backends = runtime.listBackends();
-  bool any = false;
+  std::optional<csrun::BackendType> available;
   for (const auto &b : backends) {
     if (b.available) {
-      any = true;
+      available = b.type;
       break;
     }
   }
-  if (!any)
+  if (!available)
     GTEST_SKIP() << "no available backends on this host";
 
   csrun::Workload w;
@@ -82,18 +85,8 @@ TEST(PlatformRuntimeTest, InvalidDeviceIndexFailsClosed) {
   csrun::ExecuteOptions opts;
   opts.deviceIndex = 99999; // deliberately out of range
   opts.benchmark = false;
-  auto result = runtime.run(w, csrun::BackendType::Vulkan, opts);
-  if (!result) {
-    EXPECT_EQ(result.error().code, csrun::ErrorCode::DeviceNotFound);
-    return;
-  }
-  // If Vulkan unavailable, try any available backend.
-  for (const auto &b : backends) {
-    if (!b.available)
-      continue;
-    result = runtime.run(w, b.type, opts);
-    ASSERT_FALSE(result) << "out-of-range device-index must not succeed";
-    EXPECT_EQ(result.error().code, csrun::ErrorCode::DeviceNotFound);
-    break;
-  }
+  auto result = runtime.run(w, *available, opts);
+  ASSERT_FALSE(result) << "out-of-range device-index must not succeed";
+  EXPECT_EQ(result.error().code, csrun::ErrorCode::DeviceNotFound)
+      << result.error().toString();
 }

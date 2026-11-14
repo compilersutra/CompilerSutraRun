@@ -33,3 +33,16 @@ export DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
 ./experiments/scripts/smoke_dual_gpu.sh experiments/raw/amd-20261114
 ```
+
+## matmul multi-API (`256³`, Mode B) — `matmul_multi.yaml`
+
+| Backend | Device | Validation | Median (ms) |
+|---------|--------|------------|-------------|
+| OpenCL | gfx1200 | passed | ~0.09 |
+| OpenCL | gfx1036 | passed | ~1.86 |
+| HIP | RX 9060 XT | passed | ~0.11 |
+| HIP | Raphael | passed | ~1.87 |
+| OpenGL | dGPU (`DRI_PRIME=1`) | passed | ~0.06 |
+| OpenGL | iGPU | passed | ~0.86 |
+
+Vulkan handwritten SPIR-V matmul remains `examples/matmul/matmul.yaml` (operation: spirv).

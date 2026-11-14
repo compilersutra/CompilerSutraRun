@@ -2,6 +2,7 @@
 
 #include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
+#include "csrun/workload/MatmulScaffold.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
 #include <hip/hip_runtime.h>
@@ -84,17 +85,33 @@ Expected<std::vector<DeviceInfo>> HipBackend::enumerateDevices() const {
 
 Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceInfo &device,
                                         const ExecuteOptions &options) const {
-  auto nOr = requireVectorAddFp32(workload, "hip");
-  if (!nOr)
-    return nOr.error();
-  const uint32_t n = nOr.value();
+  const bool isMatmul = workload.operation == "matmul";
+  MatmulDims matDims{};
+  uint32_t n = 0;
+  if (isMatmul) {
+    auto dOr = requireMatmulFp32(workload, "hip");
+    if (!dOr)
+      return dOr.error();
+    matDims = dOr.value();
+  } else {
+    auto nOr = requireVectorAddFp32(workload, "hip");
+    if (!nOr)
+      return nOr.error();
+    n = nOr.value();
+  }
 
-  static constexpr std::string_view kFallbacks[] = {
+  static constexpr std::string_view kVecFallbacks[] = {
       "examples/vector_add/vector_add.hip",
       "../examples/vector_add/vector_add.hip",
       "../../examples/vector_add/vector_add.hip",
   };
-  auto kernelPath = resolveKernelPath(workload, "vector_add.hip", kFallbacks);
+  static constexpr std::string_view kMatFallbacks[] = {
+      "examples/matmul/matmul.hip",
+      "../examples/matmul/matmul.hip",
+      "../../examples/matmul/matmul.hip",
+  };
+  auto kernelPath = isMatmul ? resolveKernelPath(workload, "matmul.hip", kMatFallbacks)
+                             : resolveKernelPath(workload, "vector_add.hip", kVecFallbacks);
   if (!kernelPath)
     return kernelPath.error();
   auto src = readFile(kernelPath.value());
@@ -110,8 +127,9 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
     return gp.error();
 
   hiprtcProgram prog = nullptr;
+  const char *srcName = isMatmul ? "matmul.hip" : "vector_add.hip";
   hiprtcResult rc =
-      hiprtcCreateProgram(&prog, src.value().c_str(), "vector_add.hip", 0, nullptr, nullptr);
+      hiprtcCreateProgram(&prog, src.value().c_str(), srcName, 0, nullptr, nullptr);
   if (rc != HIPRTC_SUCCESS || !prog) {
     return Error::make(ErrorCode::CompilationFailed,
                        std::string("hiprtcCreateProgram: ") + hiprtcGetErrorString(rc));
@@ -143,14 +161,14 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
     return ld.error();
 
   hipFunction_t fn = nullptr;
-  if (auto gf = checkHip(hipModuleGetFunction(&fn, module, "vector_add"), "hipModuleGetFunction");
-      !gf) {
+  const char *fnName = isMatmul ? "matmul" : "vector_add";
+  if (auto gf = checkHip(hipModuleGetFunction(&fn, module, fnName), "hipModuleGetFunction"); !gf) {
     hipModuleUnload(module);
     return gf.error();
   }
 
-  VectorAddHost host = makeVectorAddHost(n);
-  const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+  VectorAddHost vecHost;
+  MatmulHost matHost;
   float *devA = nullptr;
   float *devB = nullptr;
   float *devC = nullptr;
@@ -166,27 +184,54 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
     return err;
   };
 
-  if (auto a = checkHip(hipMalloc(&devA, bytes), "hipMalloc A"); !a)
-    return failClean(a.error());
-  if (auto b = checkHip(hipMalloc(&devB, bytes), "hipMalloc B"); !b)
-    return failClean(b.error());
-  if (auto c = checkHip(hipMalloc(&devC, bytes), "hipMalloc C"); !c)
-    return failClean(c.error());
-
-  if (auto cpy = checkHip(hipMemcpy(devA, host.a.data(), bytes, hipMemcpyHostToDevice), "H2D A");
-      !cpy)
-    return failClean(cpy.error());
-  if (auto cpy = checkHip(hipMemcpy(devB, host.b.data(), bytes, hipMemcpyHostToDevice), "H2D B");
-      !cpy)
-    return failClean(cpy.error());
-
   unsigned int count = n;
-  void *args[] = {&devA, &devB, &devC, &count};
-  const unsigned int block = 256;
-  const unsigned int grid = (n + block - 1) / block;
+  unsigned int M = matDims.M, N = matDims.N, K = matDims.K;
+  unsigned int gridX = 1, gridY = 1, blockX = 256, blockY = 1;
+  void *argsVec[] = {&devA, &devB, &devC, &count};
+  void *argsMat[] = {&devA, &devB, &devC, &M, &N, &K};
+  void **args = isMatmul ? argsMat : argsVec;
+
+  if (isMatmul) {
+    matHost = makeMatmulHost(matDims);
+    const size_t aBytes = static_cast<size_t>(M) * K * sizeof(float);
+    const size_t bBytes = static_cast<size_t>(K) * N * sizeof(float);
+    const size_t cBytes = static_cast<size_t>(M) * N * sizeof(float);
+    if (auto a = checkHip(hipMalloc(&devA, aBytes), "hipMalloc A"); !a)
+      return failClean(a.error());
+    if (auto b = checkHip(hipMalloc(&devB, bBytes), "hipMalloc B"); !b)
+      return failClean(b.error());
+    if (auto c = checkHip(hipMalloc(&devC, cBytes), "hipMalloc C"); !c)
+      return failClean(c.error());
+    if (auto cpy = checkHip(hipMemcpy(devA, matHost.a.data(), aBytes, hipMemcpyHostToDevice), "H2D A");
+        !cpy)
+      return failClean(cpy.error());
+    if (auto cpy = checkHip(hipMemcpy(devB, matHost.b.data(), bBytes, hipMemcpyHostToDevice), "H2D B");
+        !cpy)
+      return failClean(cpy.error());
+    blockX = 16;
+    blockY = 16;
+    gridX = (N + blockX - 1) / blockX;
+    gridY = (M + blockY - 1) / blockY;
+  } else {
+    vecHost = makeVectorAddHost(n);
+    const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+    if (auto a = checkHip(hipMalloc(&devA, bytes), "hipMalloc A"); !a)
+      return failClean(a.error());
+    if (auto b = checkHip(hipMalloc(&devB, bytes), "hipMalloc B"); !b)
+      return failClean(b.error());
+    if (auto c = checkHip(hipMalloc(&devC, bytes), "hipMalloc C"); !c)
+      return failClean(c.error());
+    if (auto cpy = checkHip(hipMemcpy(devA, vecHost.a.data(), bytes, hipMemcpyHostToDevice), "H2D A");
+        !cpy)
+      return failClean(cpy.error());
+    if (auto cpy = checkHip(hipMemcpy(devB, vecHost.b.data(), bytes, hipMemcpyHostToDevice), "H2D B");
+        !cpy)
+      return failClean(cpy.error());
+    gridX = (n + blockX - 1) / blockX;
+  }
+
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
-
   PowerSampler power;
 
   hipEvent_t start = nullptr;
@@ -198,8 +243,8 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
     if (timed && haveEvents)
       hipEventRecord(start, nullptr);
     const auto t0 = std::chrono::steady_clock::now();
-    hipError_t e =
-        hipModuleLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr, args, nullptr);
+    hipError_t e = hipModuleLaunchKernel(fn, gridX, gridY, 1, blockX, blockY, 1, 0, nullptr, args,
+                                         nullptr);
     if (e != hipSuccess)
       return Error::make(ErrorCode::ExecutionFailed, "hipModuleLaunchKernel: " + hipErr(e));
     e = hipDeviceSynchronize();
@@ -242,8 +287,10 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
     samples.push_back(ms.value());
   }
 
-  if (auto cpy = checkHip(hipMemcpy(host.output.data(), devC, bytes, hipMemcpyDeviceToHost), "D2H");
-      !cpy) {
+  const size_t outBytes = isMatmul ? static_cast<size_t>(M) * N * sizeof(float)
+                                   : static_cast<size_t>(n) * sizeof(float);
+  float *hostOut = isMatmul ? matHost.output.data() : vecHost.output.data();
+  if (auto cpy = checkHip(hipMemcpy(hostOut, devC, outBytes, hipMemcpyDeviceToHost), "D2H"); !cpy) {
     if (haveEvents) {
       hipEventDestroy(start);
       hipEventDestroy(stop);
@@ -259,8 +306,11 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
   if (report.driver.empty())
     report.driver = prop.gcnArchName;
 
-  RunResult result = fillVectorAddResult(workload, report, BackendType::HIP, "hiprtc", options,
-                                         samples, timingSource, host.reference, host.output);
+  RunResult result =
+      isMatmul ? fillMatmulResult(workload, report, BackendType::HIP, "hiprtc", options, samples,
+                                  timingSource, matHost.reference, matHost.output)
+               : fillVectorAddResult(workload, report, BackendType::HIP, "hiprtc", options, samples,
+                                     timingSource, vecHost.reference, vecHost.output);
   result.power = power.stats();
 
   if (haveEvents) {
@@ -272,7 +322,8 @@ Expected<RunResult> HipBackend::execute(const Workload &workload, const DeviceIn
   hipFree(devC);
   hipModuleUnload(module);
 
-  logInfo("runtime", "HIP vector_add completed on " + result.deviceName);
+  logInfo("runtime", std::string("HIP ") + (isMatmul ? "matmul" : "vector_add") +
+                         " completed on " + result.deviceName);
   return result;
 }
 
