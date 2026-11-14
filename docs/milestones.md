@@ -83,9 +83,10 @@ Not “one workload type at a time”. General path:
 
 ---
 
-## M2 — CUDA path
+## M2 — CUDA path *(deferred)*
 
-Prompt **Phase 4–5**.
+Prompt **Phase 4–5**. **Deferred** until an NVIDIA GPU is available (local or cloud quota).
+Active validation focus is **M13 (AMD dual-GPU)** on hardware we already have.
 
 | Deliverable | Notes |
 |-------------|--------|
@@ -96,6 +97,25 @@ Prompt **Phase 4–5**.
 | Optional build | `CSRUN_ENABLE_CUDA` — no fail if missing |
 
 **Exit:** `csrun vector_add.yaml --backend cuda` on NVIDIA hardware.
+
+---
+
+## M13 — AMD dual-GPU validation *(active)*
+
+Validate csrun on the dual-AMD Linux host (discrete + integrated) across the
+backends that already work here. No NVIDIA required.
+
+| Deliverable | Notes |
+|-------------|--------|
+| 8-cell dual-GPU smoke | Vulkan/OpenGL/OpenCL/HIP × dGPU/iGPU; `experiments/scripts/smoke_dual_gpu.sh` |
+| Device-selection contracts | `--device-index` vs OpenGL `DRI_PRIME`; RADV ICD notes |
+| Second multi-API workload | e.g. matmul (or similar) beyond vector_add on AMD |
+| Multi-batch timing artifact | Distinguish within-run stddev vs multi-run dispersion |
+| Archived JSON refresh | Dated `experiments/raw/amd-…/` for paper/repo |
+
+**Exit:** 8/8 smoke green on RX 9060 XT + Raphael; docs + raw JSON updated.
+
+**GitHub:** [milestone M13](https://github.com/compilersutra/CompilerSutraRun/milestone/14)
 
 ---
 

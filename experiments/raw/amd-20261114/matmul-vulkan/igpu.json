@@ -1,0 +1,223 @@
+{
+  "backend": {
+    "name": "vulkan"
+  },
+  "compiler": {
+    "name": "glslangValidator+spirv-val"
+  },
+  "counters": {
+    "clip_invocations": 0,
+    "clip_primitives": 0,
+    "cs_invocations": 65536,
+    "derived": {
+      "clip_reject_ratio": 0.0,
+      "fs_per_primitive": 0.0,
+      "fs_per_vs": 0.0,
+      "overdraw_estimate": 0.0
+    },
+    "fs_invocations": 0,
+    "fs_per_primitive": 0.0,
+    "fs_per_vs": 0.0,
+    "gpu_elapsed_ms": 1.03962,
+    "gpu_stages": {
+      "available": true,
+      "color_to_bottom_ms": 0.0,
+      "cs_to_bottom_ms": 0.00388,
+      "fs_to_color_ms": 0.0,
+      "kind": "compute",
+      "top_to_cs_ms": 1.0356800000000002,
+      "top_to_vs_ms": 0.0,
+      "total_ms": 1.03962,
+      "vs_to_fs_ms": 0.0
+    },
+    "gpu_timing": {
+      "available": true,
+      "elapsed_ms": 1.03962
+    },
+    "host": {
+      "d2h_ms": 0.426262,
+      "h2d_ms": 0.074521,
+      "queue_wait_ms": 1.081502,
+      "record_ms": 0.00103,
+      "submit_ms": 0.005549999999999999
+    },
+    "host_d2h_ms": 0.426262,
+    "host_h2d_ms": 0.074521,
+    "host_queue_wait_ms": 1.081502,
+    "host_record_ms": 0.00103,
+    "host_submit_ms": 0.005549999999999999,
+    "ia_primitives": 0,
+    "ia_vertices": 0,
+    "occlusion": {
+      "available": false,
+      "samples_passed": 0
+    },
+    "occlusion_samples_passed": 0,
+    "overdraw_estimate": 0.0,
+    "pipeline_statistics": {
+      "available": true,
+      "clip_invocations": 0,
+      "clip_primitives": 0,
+      "cs_invocations": 65536,
+      "fs_invocations": 0,
+      "gs_invocations": 0,
+      "gs_primitives": 0,
+      "ia_primitives": 0,
+      "ia_vertices": 0,
+      "ps_invocations": 0,
+      "tcs_patches": 0,
+      "tes_invocations": 0,
+      "vs_invocations": 0
+    },
+    "ps_invocations": 0,
+    "vendor": {
+      "api": "VK_KHR_performance_query",
+      "available": true,
+      "counters": [
+        {
+          "category": "GRBM",
+          "description": "cycles the GPU is active processing a command buffer.",
+          "name": "GPU active cycles",
+          "unit": "cycles",
+          "value": 2290616.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of waves executed",
+          "name": "Waves",
+          "unit": "generic",
+          "value": 1024.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of Instructions executed",
+          "name": "Instructions",
+          "unit": "generic",
+          "value": 4217856.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of VALU Instructions executed",
+          "name": "VALU Instructions",
+          "unit": "generic",
+          "value": 1055744.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of SALU Instructions executed",
+          "name": "SALU Instructions",
+          "unit": "generic",
+          "value": 1314816.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of VMEM load instructions executed",
+          "name": "VMEM Load Instructions",
+          "unit": "generic",
+          "value": 524288.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of SMEM load instructions executed",
+          "name": "SMEM Load Instructions",
+          "unit": "generic",
+          "value": 263168.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of VMEM store instructions executed",
+          "name": "VMEM Store Instructions",
+          "unit": "generic",
+          "value": 1024.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of LDS Instructions executed",
+          "name": "LDS Instructions",
+          "unit": "generic",
+          "value": 0.0
+        },
+        {
+          "category": "Shaders",
+          "description": "Number of GDS Instructions executed",
+          "name": "GDS Instructions",
+          "unit": "generic",
+          "value": 0.0
+        },
+        {
+          "category": "Shader Utilization",
+          "description": "Percentage of time the VALU units are busy",
+          "name": "VALU Busy",
+          "unit": "%",
+          "value": 40.278764038109664
+        },
+        {
+          "category": "Shader Utilization",
+          "description": "Percentage of time the SALU units are busy",
+          "name": "SALU Busy",
+          "unit": "%",
+          "value": 28.700295796300118
+        },
+        {
+          "category": "Memory",
+          "description": "Number of bytes read from VRAM",
+          "name": "VRAM read size",
+          "unit": "bytes",
+          "value": 3722496.0
+        }
+      ],
+      "note": "VK_KHR_performance_query enabled (13/17 counters, 1 pass(es), single-pass)"
+    },
+    "vs_invocations": 0,
+    "workload": {
+      "dispatch_count": 1,
+      "draw_count": 0
+    }
+  },
+  "device": {
+    "driver": "Mesa 25.2.0-devel",
+    "name": "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)",
+    "vendor": "vendorID via radv"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=2200.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-38-generic"
+  },
+  "execution": {
+    "iterations": 20,
+    "warmup": 5
+  },
+  "note": "handwritten SPIR-V pipeline\n  - matmul.comp → matmul.comp.spv [compute] spirv 1.6 words=668 bound=102 file=examples/matmul/spv/matmul.comp.spv\n    spirv-dis (head):\n; SPIR-V\n; Version: 1.6\n; Generator: Khronos Glslang Reference Front End; 11\n; Bound: 102\n; Schema: 0\n               OpCapability Shader\n          %1 = OpExtInstImport \"GLSL.std.450\"\n               OpMemoryModel Logical GLSL450\n               OpEntryPoint GLCompute %main \"main\" %gl_GlobalInvocationID %push %_ %__0 %__1\n               OpExecutionMode %main LocalSize 16 16 1\n               OpSource GLSL 450\n               OpName %main \"main\"\n...\n  * vkCreateInstance\n  * vkEnumeratePhysicalDevices (2 devices)\n  * selected device[1]: AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) [integrated] driver=radv perf_query=yes\n  * vkCreateDevice (pipelineStatisticsQuery) (+ VK_KHR_performance_query) (+ descriptor_indexing)\n  * loaded compute SPIR-V: examples/matmul/spv/matmul.comp.spv\n  * vkCreateShaderModule\n  * vkCreatePipelineLayout\n  * vkCreateComputePipelines\n  * allocated matmul buffers M=256 N=256 K=256 h2d_ms=0.074521\n  * compute stage timestamps enabled (3 markers: TOP/CS/BOTTOM)\n  * compute pipeline statistics enabled\n  * vendor HW counters: VK_KHR_performance_query enabled (13/17 counters, 1 pass(es), single-pass)\n  * d2h_ms=0.426262\n  * host validation PASS\n  * vkCmdDispatch timed (20 iters, gpu_timestamp)\n  * IA_V=0 IA_P=0 VS=0 TCS=0 TES=0 GS=0 GS_P=0 FS/PS=0 CS=65536 CLIP_I=0 CLIP_P=0 gpu_ms=1.03962 stages[top→cs=1.03568 cs→bot=0.00388 ms] host_record_ms=0.00103 host_submit_ms=0.00555 host_queue_wait_ms=1.0815 host_h2d_ms=0.074521 host_d2h_ms=0.426262 vendor_hw=13 (median over timed iters)\n  * === Portable pipeline statistics (VK_QUERY_TYPE_PIPELINE_STATISTICS) ===\n  * cleanup compute objects\n  * vkDestroyDevice + vkDestroyInstance\nmode=compute_dispatch PASS (compute + host check)\n",
+  "power": {
+    "active_avg_watts": 0.00592592592592593,
+    "avg_watts": 0.01592592592592593,
+    "device": "card1",
+    "duration_ms": 102.03668713569641,
+    "energy_active_joules": 0.0006430486465692519,
+    "energy_joules": 0.001663415517926216,
+    "idle_watts": 0.01,
+    "max_watts": 0.022,
+    "min_watts": 0.01,
+    "samples": 27,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 1.18148,
+    "mean_ms": 1.0546479999999998,
+    "median_ms": 1.03962,
+    "min_ms": 1.02636,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.03694202290075629
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "matmul_handwritten",
+    "operation": "spirv"
+  }
+}

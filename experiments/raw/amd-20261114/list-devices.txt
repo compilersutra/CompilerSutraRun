@@ -1,0 +1,8 @@
+Backend	Index	Device
+vulkan	1	AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) [integrated] radv perf_query=yes	(Mesa 25.2.0-devel)
+vulkan	0	AMD Radeon RX 9060 XT (RADV GFX1200) [discrete] radv perf_query=no	(Mesa 25.2.0-devel)
+opengl	0	AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 20.1.8, DRM 3.64, 7.0.0-38-generic)	(4.6 (Core Profile) Mesa 25.2.0-devel)
+opencl	0	gfx1200	(3662.0 (HSA1.1,LC))
+opencl	1	gfx1036	(3662.0 (HSA1.1,LC))
+hip	0	AMD Radeon RX 9060 XT	(gfx1200)
+hip	1	AMD Radeon Graphics	(gfx1036)
