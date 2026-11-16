@@ -6,7 +6,8 @@ collaborating on CompilerSutraRun and the workshop paper draft.
 Please review this package together as a team:
 
 - Paper: [`v2/main.pdf`](v2/main.pdf)
-- Smoke JSON: [`../../experiments/raw/revalidate-20261020/`](../../experiments/raw/revalidate-20261020/)
+- Smoke JSON: [`../../experiments/raw/amd-20261114/`](../../experiments/raw/amd-20261114/)
 - Contracts: [`../../docs/timing-model.md`](../../docs/timing-model.md),
   [`../../docs/validation.md`](../../docs/validation.md)
-- Release tag: `v0.1.0-paper`
+- Dual-GPU notes: [`../../docs/amd-dual-gpu.md`](../../docs/amd-dual-gpu.md)
+- Release tag: `v0.1.1-paper`

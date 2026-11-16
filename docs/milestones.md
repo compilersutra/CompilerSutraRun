@@ -86,7 +86,7 @@ Not “one workload type at a time”. General path:
 ## M2 — CUDA path *(deferred)*
 
 Prompt **Phase 4–5**. **Deferred** until an NVIDIA GPU is available (local or cloud quota).
-Active validation focus is **M13 (AMD dual-GPU)** on hardware we already have.
+M13 AMD dual-GPU smoke is archived under `experiments/raw/amd-20261114/`.
 
 | Deliverable | Notes |
 |-------------|--------|
@@ -100,20 +100,20 @@ Active validation focus is **M13 (AMD dual-GPU)** on hardware we already have.
 
 ---
 
-## M13 — AMD dual-GPU validation *(active)*
+## M13 — AMD dual-GPU validation *(done — smoke)*
 
 Validate csrun on the dual-AMD Linux host (discrete + integrated) across the
 backends that already work here. No NVIDIA required.
 
 | Deliverable | Notes |
 |-------------|--------|
-| 8-cell dual-GPU smoke | Vulkan/OpenGL/OpenCL/HIP × dGPU/iGPU; `experiments/scripts/smoke_dual_gpu.sh` |
-| Device-selection contracts | `--device-index` vs OpenGL `DRI_PRIME`; RADV ICD notes |
-| Second multi-API workload | e.g. matmul (or similar) beyond vector_add on AMD |
-| Multi-batch timing artifact | Distinguish within-run stddev vs multi-run dispersion |
-| Archived JSON refresh | Dated `experiments/raw/amd-…/` for paper/repo |
+| 8-cell dual-GPU smoke | Done — `experiments/raw/amd-20261114/` (8/8 Mode B) |
+| Device-selection contracts | Done — `docs/amd-dual-gpu.md` |
+| Second multi-API workload | Done — matmul Vulkan + OpenCL/HIP/OpenGL scaffold |
+| Multi-batch timing artifact | Done — `multi-batch-vulkan-dgpu/` (illustrative n=5) |
+| Archived JSON refresh | Done — dated `amd-20261114` |
 
-**Exit:** 8/8 smoke green on RX 9060 XT + Raphael; docs + raw JSON updated.
+**Exit met:** 8/8 smoke green on RX 9060 XT + Raphael; docs + raw JSON + paper tables updated.
 
 **GitHub:** [milestone M13](https://github.com/compilersutra/CompilerSutraRun/milestone/14)
 
