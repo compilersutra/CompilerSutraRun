@@ -24,7 +24,8 @@ Host: RX 9060 XT (GFX1200) + Raphael iGPU (GFX1036), Mesa RADV / radeonsi, ROCm 
 | dGPU | passed | 0.201 | gpu_timestamp |
 | iGPU | passed | 1.032 | gpu_timestamp |
 
-Matmul remains Vulkan/SPIR-V only in-tree (not multi-API yet).
+Vulkan matmul uses handwritten SPIR-V (`examples/matmul/matmul.yaml`).
+OpenCL/HIP/OpenGL matmul uses `MatmulScaffold` (`matmul_multi.yaml`); see below.
 
 ## How regenerated
 
@@ -38,11 +39,16 @@ export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
 
 | Backend | Device | Validation | Median (ms) |
 |---------|--------|------------|-------------|
-| OpenCL | gfx1200 | passed | ~0.09 |
-| OpenCL | gfx1036 | passed | ~1.86 |
-| HIP | RX 9060 XT | passed | ~0.11 |
-| HIP | Raphael | passed | ~1.87 |
-| OpenGL | dGPU (`DRI_PRIME=1`) | passed | ~0.06 |
-| OpenGL | iGPU | passed | ~0.86 |
+| OpenCL | gfx1200 | passed | 0.089 |
+| OpenCL | gfx1036 | passed | 1.869 |
+| HIP | RX 9060 XT | passed | 0.112 |
+| HIP | Raphael | passed | 1.983 |
+| OpenGL | dGPU (`DRI_PRIME=1`) | passed | 0.064 |
+| OpenGL | iGPU | passed | 0.868 |
 
 Vulkan handwritten SPIR-V matmul remains `examples/matmul/matmul.yaml` (operation: spirv).
+
+## multi-batch (Vulkan dGPU vector_add, 5 process restarts)
+
+Per-process medians (ms): 0.377, 0.404, 0.380, 0.375, 0.376.
+Mean of medians 0.382 ms; sample stdev 0.012 ms. Illustrative only—not a ranking.

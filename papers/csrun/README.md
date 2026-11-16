@@ -5,13 +5,14 @@
 | Item | Location |
 |------|----------|
 | Sources | `v2/main.tex`, `v2/references.bib` |
-| Smoke artifact | `../../experiments/raw/revalidate-20261020/` |
-| Release tag cited | `v0.1.0-paper` |
+| Smoke artifact | `../../experiments/raw/amd-20261114/` |
+| Release tag cited | `v0.1.1-paper` |
 | Contracts | `../../docs/timing-model.md`, `../../docs/validation.md` |
+| Dual-GPU notes | `../../docs/amd-dual-gpu.md` |
 
 ## Before submission
 
-1. Confirm GitHub tag `v0.1.0-paper` points at the evaluated tree.
+1. Confirm GitHub tag `v0.1.1-paper` points at the evaluated tree.
 2. Choose venue; retarget LaTeX to that template (ACM/IEEE) and page limit.
 3. If the venue is **double-blind**: strip author names, emails, and the
    public GitHub URL from the review PDF; upload an anonymous artifact; restore

@@ -85,7 +85,7 @@ Paper smoke (8 cells: 4 APIs × dGPU/iGPU) and archived JSON:
 ```bash
 ./experiments/scripts/smoke_dual_gpu.sh experiments/raw/my-smoke
 # archived batch cited in the paper:
-#   experiments/raw/revalidate-20261020/
+#   experiments/raw/amd-20261114/
 ```
 
 Contracts: [`docs/timing-model.md`](docs/timing-model.md),

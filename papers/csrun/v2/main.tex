@@ -84,9 +84,11 @@ We evaluate the implementation as a \emph{tool}: on a dual-GPU AMD Linux
 workstation we execute vector addition ($N=1{,}048{,}576$ elements) through
 Vulkan, OpenGL, OpenCL, and HIP on both a discrete Radeon~RX~9060~XT and an
 integrated Raphael GPU. All eight paths pass CPU-reference validation and
-report device-side timing (\texttt{gpu\_timestamp}). We do not claim that
-these medians are cross-API performance rankings. Source, workloads, and
-smoke artifacts are released under Apache-2.0 at
+report device-side timing (\texttt{gpu\_timestamp}). We additionally smoke-test
+a $256^3$ matrix-multiply contract on the same four APIs (Vulkan SPIR-V plus
+OpenCL/HIP/OpenGL scaffolds). We do not claim that these medians are
+cross-API performance rankings. Source, workloads, and smoke artifacts are
+released under Apache-2.0 at
 \url{https://github.com/compilersutra/CompilerSutraRun}.
 \end{abstract}
 
@@ -351,8 +353,9 @@ and validation are recorded separately when available.}
 \csrun is implemented in C++20 (CMake~$\geq$~3.20, Ninja). Optional
 dependencies enable backends at configure time; absent SDKs become stubs.
 Kernels for vector add are authored per API
-(\texttt{.comp}, \texttt{.cl}, \texttt{.hip}, GLSL). A Vulkan-oriented
-matmul example exists but is \emph{not} counted as multi-API evaluation.
+(\texttt{.comp}, \texttt{.cl}, \texttt{.hip}, GLSL). Matrix multiply uses a
+shared scaffold with per-API kernels (Vulkan SPIR-V; OpenCL/HIP/OpenGL via
+\texttt{MatmulScaffold}).
 
 \begin{table}[t]
 \centering
@@ -370,8 +373,8 @@ Others  & stub & CUDA, D3D12, Metal, WebGPU, GLES, CPU backend:
                  registered as \texttt{UNAVAILABLE} \\
 \bottomrule
 \end{tabular}
-\caption{Backend status. ``Supported'' means vector-add execute + validate
-paths exist in the evaluated tree. Stubs are not execution backends.}
+\caption{Backend status. ``Supported'' means vector-add and matmul execute +
+validate paths exist in the evaluated tree. Stubs are not execution backends.}
 \label{tab:backends}
 \end{table}
 \FloatBarrier
@@ -398,12 +401,13 @@ Item & Configuration \\
 CPU & AMD Ryzen~7 9700X \\
 Discrete GPU & Radeon RX~9060~XT (Navi~44 / GFX1200), PCI \texttt{03:00.0} \\
 Integrated GPU & Radeon Graphics (Raphael / GFX1036), PCI \texttt{15:00.0} \\
-OS / kernel & Linux 7.0.0-34-generic (Ubuntu 24.04-based host) \\
+OS / kernel & Linux 7.0.0-38-generic (Ubuntu 24.04-based host) \\
 Vulkan & Mesa RADV (ICD forced to \texttt{radeon\_icd.json}) \\
 OpenGL & Mesa radeonsi \\
 OpenCL / HIP & ROCm ICD / HIP runtime as enumerated on host \\
-Workload & vector\_add, $N=1{,}048{,}576$ fp32, warmup~10, iters~100 \\
-Artifact & \texttt{experiments/raw/revalidate-20261020/} \\
+Workloads & vector\_add ($N=1{,}048{,}576$); matmul ($256^3$); warmup~10,
+           iters~100 \\
+Artifact & \texttt{experiments/raw/amd-20261114/} \\
 \bottomrule
 \end{tabular}
 \caption{Machine and software configuration for the functional study.}
@@ -413,11 +417,13 @@ Artifact & \texttt{experiments/raw/revalidate-20261020/} \\
 We treat this study as a \textbf{functional smoke evaluation}: it demonstrates
 that the harness can select devices, execute, validate, and label timing
 sources. It is not a multi-batch statistical performance comparison.
+A five-process restart series on one backend/device pair is included only to
+illustrate process-level median dispersion, not to certify a ranking.
 
 \subsection{Results}
 
-Table~\ref{tab:smoke} reports one archived batch. Every row uses Mode~B
-(\texttt{gpu\_timestamp}). The reported standard deviation is the
+Table~\ref{tab:smoke} reports the archived vector-add batch. Every row uses
+Mode~B (\texttt{gpu\_timestamp}). The reported standard deviation is the
 \emph{within-batch} dispersion over the 100 measured iterations of that
 single run---not the variability across independently restarted experiments.
 
@@ -428,27 +434,60 @@ single run---not the variability across independently restarted experiments.
 \toprule
 Backend & Device & Val. & Median (ms) & Std.\ (ms) \\
 \midrule
-Vulkan & RX~9060~XT & passed & 0.383 & 0.010 \\
-Vulkan & Raphael    & passed & 0.400 & 0.013 \\
-HIP    & RX~9060~XT & passed & 0.052 & 0.038 \\
-HIP    & Raphael    & passed & 0.397 & 0.012 \\
-OpenCL & gfx1200    & passed & 0.020 & 0.035 \\
-OpenCL & gfx1036    & passed & 0.382 & 0.024 \\
-OpenGL & RX~9060~XT & passed & 0.017 & 0.001 \\
-OpenGL & Raphael    & passed & 0.380 & 0.017 \\
+Vulkan & RX~9060~XT & passed & 0.391 & 0.172 \\
+Vulkan & Raphael    & passed & 0.385 & 0.034 \\
+HIP    & RX~9060~XT & passed & 0.048 & 0.028 \\
+HIP    & Raphael    & passed & 0.394 & 0.741 \\
+OpenCL & gfx1200    & passed & 0.020 & 0.036 \\
+OpenCL & gfx1036    & passed & 0.390 & 0.609 \\
+OpenGL & RX~9060~XT & passed & 0.019 & 0.026 \\
+OpenGL & Raphael    & passed & 0.382 & 0.026 \\
 \bottomrule
 \end{tabular}
-\caption{Functional smoke ($N=1{,}048{,}576$, Mode~B;
-artifact \texttt{revalidate-20261020}).
+\caption{Vector-add functional smoke ($N=1{,}048{,}576$, Mode~B;
+artifact \texttt{amd-20261114}).
 Std.\ is within-run dispersion ($n{=}100$), not multi-run IQR.
 Medians are not a cross-API ranking.}
 \label{tab:smoke}
 \end{table}
 
+Table~\ref{tab:matmul} reports matrix-multiply smoke on the same host
+($256^3$, Mode~B). Vulkan uses handwritten SPIR-V; OpenCL, HIP, and OpenGL
+use the shared matmul scaffold. All eight cells validate.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Backend & Device & Val. & Median (ms) & Std.\ (ms) \\
+\midrule
+Vulkan & RX~9060~XT & passed & 0.204 & 0.031 \\
+Vulkan & Raphael    & passed & 1.040 & 0.037 \\
+OpenCL & gfx1200    & passed & 0.089 & 0.001 \\
+OpenCL & gfx1036    & passed & 1.869 & 0.030 \\
+HIP    & RX~9060~XT & passed & 0.112 & 0.002 \\
+HIP    & Raphael    & passed & 1.983 & 0.070 \\
+OpenGL & RX~9060~XT & passed & 0.064 & 0.000 \\
+OpenGL & Raphael    & passed & 0.868 & 0.023 \\
+\bottomrule
+\end{tabular}
+\caption{Matmul functional smoke ($256^3$, Mode~B;
+artifact \texttt{amd-20261114}). Medians are not a cross-API ranking.}
+\label{tab:matmul}
+\end{table}
+
+As an illustration of process-level restart dispersion (not a performance
+claim), five independent Vulkan discrete-GPU vector-add processes yielded
+per-process medians with mean $0.382$\,ms and sample standard deviation
+$0.012$\,ms (\path{multi-batch-vulkan-dgpu/}).
+
 \paragraph{Findings.}
 \begin{enumerate}
-  \item The same workload contract executed on both GPUs across four APIs
+  \item The same vector-add contract executed on both GPUs across four APIs
         with CPU-reference status \texttt{passed} in all eight cells.
+  \item The same matmul contract validated on both GPUs across four APIs
+        (Vulkan SPIR-V plus OpenCL/HIP/OpenGL scaffolds).
   \item Explicit device selection is required on dual-GPU hosts:
         \texttt{--device-index} for Vulkan/OpenCL/HIP, and
         \texttt{DRI\_PRIME=1} for OpenGL discrete (OpenGL exposes a single
@@ -460,9 +499,10 @@ Medians are not a cross-API ranking.}
 \end{enumerate}
 
 \paragraph{What this study does not claim.}
-We do not claim harness-LOC reduction ratios, multi-workload correctness
-coverage, or statistically stable cross-API timings. Those require
-additional artifact experiments beyond this tool paper's scope.
+We do not claim harness-LOC reduction ratios, broad application-kernel
+coverage, or statistically stable cross-API timings. The five-process
+restart series is illustrative only. Broader artifact experiments remain
+out of this tool paper's scope.
 
 %======================================================================
 \section{Limitations and Threats to Validity}
@@ -473,9 +513,10 @@ Results come from a single AMD workstation. CUDA, Metal, D3D12, and WebGPU
 remain stubs; we do not imply NVIDIA or Apple support from registration alone.
 
 \paragraph{Construct validity.}
-Only vector add is evaluated end-to-end across four APIs. A Vulkan matmul
-example exists but is not a multi-API result. Within-batch standard deviation
-must not be read as experiment-level confidence intervals.
+Evaluation covers two microkernels (vector add and dense matmul) on one AMD
+host. Within-batch standard deviation must not be read as experiment-level
+confidence intervals; the five-process restart series is not a substitute for
+a designed multi-batch study.
 
 \paragraph{Internal validity.}
 Sub-millisecond medians are sensitive to timer placement and driver state.
@@ -491,10 +532,10 @@ evidence.
 CompilerSutraRun provides a reusable contract for describing, executing, and
 validating GPU workloads across Vulkan, OpenGL, OpenCL, and HIP, with explicit
 device selection and labeled timing provenance. On a dual-GPU AMD host, the
-same vector-add workload completes and validates on all four APIs for both
-devices. We release the implementation and smoke artifacts under Apache-2.0
-so others can inspect what is portable, what is validated, what is measured,
-and what remains unsupported.
+same vector-add and matmul contracts complete and validate on all four APIs
+for both devices. We release the implementation and smoke artifacts under
+Apache-2.0 so others can inspect what is portable, what is validated, what is
+measured, and what remains unsupported.
 
 \section*{Acknowledgments}
 We thank Sayu and the CompilerSutra collaborators for joint work on
@@ -503,8 +544,9 @@ CompilerSutraRun and for reviewing this draft together as a team.
 \section*{Availability}
 Source repository:
 \url{https://github.com/compilersutra/CompilerSutraRun}
-(release tag \texttt{v0.1.0-paper}).
-Smoke JSON under \path{experiments/raw/revalidate-20261020/}.
+(release tag \texttt{v0.1.1-paper}).
+Smoke JSON under \path{experiments/raw/amd-20261114/}.
+Dual-GPU notes: \path{docs/amd-dual-gpu.md}.
 Timing and validation contracts:
 \path{docs/timing-model.md}, \path{docs/validation.md}.
 
