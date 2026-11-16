@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "opengl"
+  },
+  "compiler": {
+    "name": "glsl-opengl-driver"
+  },
+  "device": {
+    "driver": "4.6 (Core Profile) Mesa 25.2.0-devel",
+    "name": "AMD Radeon RX 9060 XT (radeonsi, gfx1200, LLVM 20.1.8, DRM 3.64, 7.0.0-38-generic)",
+    "vendor": "AMD"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=2200.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-38-generic"
+  },
+  "execution": {
+    "iterations": 20,
+    "warmup": 5
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 0.0024615384615384664,
+    "avg_watts": 0.013461538461538466,
+    "device": "card1",
+    "duration_ms": 28.445605039596558,
+    "energy_active_joules": 6.973090744018557e-05,
+    "energy_joules": 0.0003826325628757477,
+    "idle_watts": 0.011,
+    "max_watts": 0.017,
+    "min_watts": 0.011,
+    "samples": 13,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.06544,
+    "mean_ms": 0.06421800000000001,
+    "median_ms": 0.06416,
+    "min_ms": 0.06324,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.00047857705753619043
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "matmul",
+    "operation": "matmul"
+  }
+}

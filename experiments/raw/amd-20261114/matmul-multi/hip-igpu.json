@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "hip"
+  },
+  "compiler": {
+    "name": "hiprtc"
+  },
+  "device": {
+    "driver": "gfx1036",
+    "name": "AMD Radeon Graphics",
+    "vendor": "AMD"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=600.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-38-generic"
+  },
+  "execution": {
+    "iterations": 20,
+    "warmup": 5
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 0.006047619047619053,
+    "avg_watts": 0.020047619047619054,
+    "device": "card1",
+    "duration_ms": 71.11694598197937,
+    "energy_active_joules": 0.00039147481179237367,
+    "energy_joules": 0.0013871120555400851,
+    "idle_watts": 0.014,
+    "max_watts": 0.025,
+    "min_watts": 0.014,
+    "samples": 21,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 2.2512240409851074,
+    "mean_ms": 1.9930306673049927,
+    "median_ms": 1.9831100106239319,
+    "min_ms": 1.9139950275421143,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.07038402603215474
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "matmul",
+    "operation": "matmul"
+  }
+}

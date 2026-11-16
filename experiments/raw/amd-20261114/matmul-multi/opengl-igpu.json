@@ -1,0 +1,54 @@
+{
+  "backend": {
+    "name": "opengl"
+  },
+  "compiler": {
+    "name": "glsl-opengl-driver"
+  },
+  "device": {
+    "driver": "4.6 (Core Profile) Mesa 25.2.0-devel",
+    "name": "AMD Radeon Graphics (radeonsi, raphael_mendocino, LLVM 20.1.8, DRM 3.64, 7.0.0-38-generic)",
+    "vendor": "AMD"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "csrun_version": "0.1.0",
+    "gpu_clocks": "sclk=2200.000000MHz",
+    "gpu_driver": "amdgpu ",
+    "kernel": "7.0.0-38-generic"
+  },
+  "execution": {
+    "iterations": 20,
+    "warmup": 5
+  },
+  "note": "PASS",
+  "power": {
+    "active_avg_watts": 0.003125000000000001,
+    "avg_watts": 0.012125,
+    "device": "card1",
+    "duration_ms": 44.677255153656006,
+    "energy_active_joules": 0.0001606446160078049,
+    "energy_joules": 0.0005627399123907089,
+    "idle_watts": 0.009,
+    "max_watts": 0.017,
+    "min_watts": 0.009,
+    "samples": 16,
+    "source": "sysfs-hwmon"
+  },
+  "schema_version": 3,
+  "timing": {
+    "max_ms": 0.94824,
+    "mean_ms": 0.8758779999999999,
+    "median_ms": 0.86784,
+    "min_ms": 0.86004,
+    "source": "gpu_timestamp",
+    "stddev_ms": 0.02253673081882108
+  },
+  "validation": {
+    "status": "passed"
+  },
+  "workload": {
+    "name": "matmul",
+    "operation": "matmul"
+  }
+}

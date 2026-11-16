@@ -2,6 +2,7 @@
 
 #include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
+#include "csrun/workload/MatmulScaffold.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
 #include <EGL/egl.h>
@@ -254,17 +255,33 @@ Expected<std::vector<DeviceInfo>> OpenGLBackend::enumerateDevices() const {
 Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
                                            const DeviceInfo &device,
                                            const ExecuteOptions &options) const {
-  auto nOr = requireVectorAddFp32(workload, "opengl");
-  if (!nOr)
-    return nOr.error();
-  const uint32_t n = nOr.value();
+  const bool isMatmul = workload.operation == "matmul";
+  MatmulDims matDims{};
+  uint32_t n = 0;
+  if (isMatmul) {
+    auto dOr = requireMatmulFp32(workload, "opengl");
+    if (!dOr)
+      return dOr.error();
+    matDims = dOr.value();
+  } else {
+    auto nOr = requireVectorAddFp32(workload, "opengl");
+    if (!nOr)
+      return nOr.error();
+    n = nOr.value();
+  }
 
-  static constexpr std::string_view kFallbacks[] = {
+  static constexpr std::string_view kVecFallbacks[] = {
       "examples/vector_add/vector_add.glsl",
       "../examples/vector_add/vector_add.glsl",
       "../../examples/vector_add/vector_add.glsl",
   };
-  auto shaderPath = resolveKernelPath(workload, "vector_add.glsl", kFallbacks);
+  static constexpr std::string_view kMatFallbacks[] = {
+      "examples/matmul/matmul.glsl",
+      "../examples/matmul/matmul.glsl",
+      "../../examples/matmul/matmul.glsl",
+  };
+  auto shaderPath = isMatmul ? resolveKernelPath(workload, "matmul.glsl", kMatFallbacks)
+                             : resolveKernelPath(workload, "vector_add.glsl", kVecFallbacks);
   if (!shaderPath)
     return shaderPath.error();
   auto src = readFile(shaderPath.value());
@@ -280,34 +297,57 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
   if (!prog)
     return prog.error();
 
-  VectorAddHost host = makeVectorAddHost(n);
+  VectorAddHost vecHost;
+  MatmulHost matHost;
+  GLsizeiptr bytesA = 0, bytesB = 0, bytesC = 0;
+  if (isMatmul) {
+    matHost = makeMatmulHost(matDims);
+    bytesA = static_cast<GLsizeiptr>(matDims.M * matDims.K * sizeof(float));
+    bytesB = static_cast<GLsizeiptr>(matDims.K * matDims.N * sizeof(float));
+    bytesC = static_cast<GLsizeiptr>(matDims.M * matDims.N * sizeof(float));
+  } else {
+    vecHost = makeVectorAddHost(n);
+    bytesA = bytesB = bytesC = static_cast<GLsizeiptr>(n * sizeof(float));
+  }
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
 
   PowerSampler power;
 
-  const GLsizeiptr bytes = static_cast<GLsizeiptr>(n * sizeof(float));
   GLuint buffers[3] = {};
   gl.GenBuffers(3, buffers);
+  const GLsizeiptr sizes[3] = {bytesA, bytesB, bytesC};
   for (int i = 0; i < 3; ++i) {
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[i]);
-    gl.BufferData(GL_SHADER_STORAGE_BUFFER, bytes, nullptr, GL_DYNAMIC_COPY);
+    gl.BufferData(GL_SHADER_STORAGE_BUFFER, sizes[i], nullptr, GL_DYNAMIC_COPY);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, static_cast<GLuint>(i), buffers[i]);
   }
 
   gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[0]);
-  void *mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_WRITE_BIT);
-  std::memcpy(mapped, host.a.data(), static_cast<size_t>(bytes));
+  void *mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytesA, GL_MAP_WRITE_BIT);
+  std::memcpy(mapped, isMatmul ? matHost.a.data() : vecHost.a.data(), static_cast<size_t>(bytesA));
   gl.UnmapBuffer(GL_SHADER_STORAGE_BUFFER);
   gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[1]);
-  mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_WRITE_BIT);
-  std::memcpy(mapped, host.b.data(), static_cast<size_t>(bytes));
+  mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytesB, GL_MAP_WRITE_BIT);
+  std::memcpy(mapped, isMatmul ? matHost.b.data() : vecHost.b.data(), static_cast<size_t>(bytesB));
   gl.UnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
   gl.UseProgram(prog.value());
-  const GLint loc = gl.GetUniformLocation(prog.value(), "uCount");
-  if (loc >= 0)
-    gl.Uniform1ui(loc, n);
+  if (isMatmul) {
+    const GLint locM = gl.GetUniformLocation(prog.value(), "uM");
+    const GLint locN = gl.GetUniformLocation(prog.value(), "uN");
+    const GLint locK = gl.GetUniformLocation(prog.value(), "uK");
+    if (locM >= 0)
+      gl.Uniform1ui(locM, matDims.M);
+    if (locN >= 0)
+      gl.Uniform1ui(locN, matDims.N);
+    if (locK >= 0)
+      gl.Uniform1ui(locK, matDims.K);
+  } else {
+    const GLint loc = gl.GetUniformLocation(prog.value(), "uCount");
+    if (loc >= 0)
+      gl.Uniform1ui(loc, n);
+  }
 
   const bool haveTimer = gl.GenQueries && gl.BeginQuery && gl.EndQuery && gl.GetQueryObjectui64v;
   GLuint query = 0;
@@ -318,8 +358,14 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
     if (timed && haveTimer)
       gl.BeginQuery(GL_TIME_ELAPSED, query);
     const auto t0 = std::chrono::steady_clock::now();
-    const uint32_t groups = (n + 255u) / 256u;
-    gl.DispatchCompute(groups, 1, 1);
+    if (isMatmul) {
+      const uint32_t gx = (matDims.N + 15u) / 16u;
+      const uint32_t gy = (matDims.M + 15u) / 16u;
+      gl.DispatchCompute(gx, gy, 1);
+    } else {
+      const uint32_t groups = (n + 255u) / 256u;
+      gl.DispatchCompute(groups, 1, 1);
+    }
     gl.MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     gl.Finish();
     const auto t1 = std::chrono::steady_clock::now();
@@ -359,13 +405,17 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
   }
 
   gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[2]);
-  mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
-  std::memcpy(host.output.data(), mapped, static_cast<size_t>(bytes));
+  mapped = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytesC, GL_MAP_READ_BIT);
+  std::memcpy(isMatmul ? matHost.output.data() : vecHost.output.data(), mapped,
+              static_cast<size_t>(bytesC));
   gl.UnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
-  RunResult result = fillVectorAddResult(workload, device, BackendType::OpenGL,
-                                         "glsl-opengl-driver", options, samples, timingSource,
-                                         host.reference, host.output);
+  RunResult result =
+      isMatmul ? fillMatmulResult(workload, device, BackendType::OpenGL, "glsl-opengl-driver",
+                                  options, samples, timingSource, matHost.reference, matHost.output)
+               : fillVectorAddResult(workload, device, BackendType::OpenGL, "glsl-opengl-driver",
+                                     options, samples, timingSource, vecHost.reference,
+                                     vecHost.output);
   result.power = power.stats();
 
   if (query)
@@ -373,7 +423,8 @@ Expected<RunResult> OpenGLBackend::execute(const Workload &workload,
   gl.DeleteBuffers(3, buffers);
   gl.DeleteProgram(prog.value());
 
-  logInfo("runtime", "OpenGL vector_add completed on " + result.deviceName);
+  logInfo("runtime", std::string("OpenGL ") + (isMatmul ? "matmul" : "vector_add") +
+                         " completed on " + result.deviceName);
   return result;
 }
 

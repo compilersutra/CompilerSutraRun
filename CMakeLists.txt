@@ -97,7 +97,8 @@ target_include_directories(csrun_validation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/i
 add_library(csrun_workload
   src/workload/Workload.cpp
   src/workload/WorkloadParser.cpp
-  src/workload/VectorAddScaffold.cpp)
+  src/workload/VectorAddScaffold.cpp
+  src/workload/MatmulScaffold.cpp)
 target_link_libraries(csrun_workload PUBLIC
   csrun_core
   csrun_validation

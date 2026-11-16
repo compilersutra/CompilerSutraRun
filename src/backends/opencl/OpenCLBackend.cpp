@@ -2,6 +2,7 @@
 
 #include "csrun/benchmark/PowerSampler.h"
 #include "csrun/core/Log.h"
+#include "csrun/workload/MatmulScaffold.h"
 #include "csrun/workload/VectorAddScaffold.h"
 
 #define CL_TARGET_OPENCL_VERSION 300
@@ -13,6 +14,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace csrun {
@@ -137,19 +139,92 @@ Expected<std::vector<DeviceInfo>> OpenCLBackend::enumerateDevices() const {
   return out;
 }
 
+namespace {
+
+Expected<std::pair<cl_command_queue, bool>> makeClQueue(cl_context ctx, cl_device_id device) {
+  cl_int err = CL_SUCCESS;
+  bool profilingQueue = true;
+  cl_queue_properties qprops[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
+  cl_command_queue queue = clCreateCommandQueueWithProperties(ctx, device, qprops, &err);
+  if (err != CL_SUCCESS || !queue) {
+    profilingQueue = false;
+    queue = clCreateCommandQueueWithProperties(ctx, device, nullptr, &err);
+  }
+  if (err != CL_SUCCESS || !queue) {
+    profilingQueue = false;
+    queue = clCreateCommandQueue(ctx, device, CL_QUEUE_PROFILING_ENABLE, &err);
+    if (err == CL_SUCCESS && queue)
+      profilingQueue = true;
+  }
+  if (err != CL_SUCCESS || !queue)
+    queue = clCreateCommandQueue(ctx, device, 0, &err);
+  if (err != CL_SUCCESS || !queue)
+    return Error::make(ErrorCode::DriverError, "clCreateCommandQueue: " + clErr(err));
+  return std::make_pair(queue, profilingQueue);
+}
+
+Expected<double> profileOrWall(cl_command_queue queue, cl_kernel kernel, cl_uint workDim,
+                               const size_t *global, const size_t *local, bool timed,
+                               bool profilingQueue, TimingSource &timingSource) {
+  cl_event ev = nullptr;
+  cl_event *evPtr = (timed && profilingQueue) ? &ev : nullptr;
+  const auto t0 = std::chrono::steady_clock::now();
+  cl_int e = clEnqueueNDRangeKernel(queue, kernel, workDim, nullptr, global, local, 0, nullptr,
+                                    evPtr);
+  if (e != CL_SUCCESS)
+    return Error::make(ErrorCode::ExecutionFailed, "clEnqueueNDRangeKernel: " + clErr(e));
+  if (ev) {
+    e = clWaitForEvents(1, &ev);
+    if (e != CL_SUCCESS) {
+      clReleaseEvent(ev);
+      return Error::make(ErrorCode::ExecutionFailed, "clWaitForEvents: " + clErr(e));
+    }
+    cl_ulong startNs = 0;
+    cl_ulong endNs = 0;
+    const cl_int e0 =
+        clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(startNs), &startNs, nullptr);
+    const cl_int e1 =
+        clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(endNs), &endNs, nullptr);
+    clReleaseEvent(ev);
+    if (e0 == CL_SUCCESS && e1 == CL_SUCCESS && endNs >= startNs)
+      return static_cast<double>(endNs - startNs) / 1.0e6;
+    timingSource = TimingSource::CpuWall;
+  }
+  e = clFinish(queue);
+  if (e != CL_SUCCESS)
+    return Error::make(ErrorCode::ExecutionFailed, "clFinish: " + clErr(e));
+  const auto t1 = std::chrono::steady_clock::now();
+  return std::chrono::duration<double, std::milli>(t1 - t0).count();
+}
+
+} // namespace
+
 Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const DeviceInfo &device,
                                            const ExecuteOptions &options) const {
-  auto nOr = requireVectorAddFp32(workload, "opencl");
-  if (!nOr)
-    return nOr.error();
-  const uint32_t n = nOr.value();
+  const bool isMatmul = workload.operation == "matmul";
+  if (!isMatmul) {
+    auto nOr = requireVectorAddFp32(workload, "opencl");
+    if (!nOr)
+      return nOr.error();
+  } else {
+    auto dOr = requireMatmulFp32(workload, "opencl");
+    if (!dOr)
+      return dOr.error();
+  }
 
-  static constexpr std::string_view kFallbacks[] = {
+  static constexpr std::string_view kVecFallbacks[] = {
       "examples/vector_add/vector_add.cl",
       "../examples/vector_add/vector_add.cl",
       "../../examples/vector_add/vector_add.cl",
   };
-  auto kernelPath = resolveKernelPath(workload, "vector_add.cl", kFallbacks);
+  static constexpr std::string_view kMatFallbacks[] = {
+      "examples/matmul/matmul.cl",
+      "../examples/matmul/matmul.cl",
+      "../../examples/matmul/matmul.cl",
+  };
+  auto kernelPath =
+      isMatmul ? resolveKernelPath(workload, "matmul.cl", kMatFallbacks)
+               : resolveKernelPath(workload, "vector_add.cl", kVecFallbacks);
   if (!kernelPath)
     return kernelPath.error();
   auto src = readFile(kernelPath.value());
@@ -168,27 +243,13 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   if (err != CL_SUCCESS || !ctx)
     return Error::make(ErrorCode::DriverError, "clCreateContext: " + clErr(err));
 
-  // Prefer a profiling queue so Mode B (device event) timing is available.
-  bool profilingQueue = true;
-  cl_queue_properties qprops[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
-  cl_command_queue queue =
-      clCreateCommandQueueWithProperties(ctx, dev.device, qprops, &err);
-  if (err != CL_SUCCESS || !queue) {
-    profilingQueue = false;
-    queue = clCreateCommandQueueWithProperties(ctx, dev.device, nullptr, &err);
-  }
-  if (err != CL_SUCCESS || !queue) {
-    profilingQueue = false;
-    queue = clCreateCommandQueue(ctx, dev.device, CL_QUEUE_PROFILING_ENABLE, &err);
-    if (err == CL_SUCCESS && queue)
-      profilingQueue = true;
-  }
-  if (err != CL_SUCCESS || !queue)
-    queue = clCreateCommandQueue(ctx, dev.device, 0, &err);
-  if (err != CL_SUCCESS || !queue) {
+  auto queueOr = makeClQueue(ctx, dev.device);
+  if (!queueOr) {
     clReleaseContext(ctx);
-    return Error::make(ErrorCode::DriverError, "clCreateCommandQueue: " + clErr(err));
+    return queueOr.error();
   }
+  cl_command_queue queue = queueOr.value().first;
+  bool profilingQueue = queueOr.value().second;
 
   const char *srcPtr = src.value().c_str();
   size_t srcLen = src.value().size();
@@ -214,7 +275,8 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
     return e;
   }
 
-  cl_kernel kernel = clCreateKernel(program, "vector_add", &err);
+  const char *kName = isMatmul ? "matmul" : "vector_add";
+  cl_kernel kernel = clCreateKernel(program, kName, &err);
   if (err != CL_SUCCESS || !kernel) {
     clReleaseProgram(program);
     clReleaseCommandQueue(queue);
@@ -222,13 +284,62 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
     return Error::make(ErrorCode::CompilationFailed, "clCreateKernel: " + clErr(err));
   }
 
-  VectorAddHost host = makeVectorAddHost(n);
-  const size_t bytes = static_cast<size_t>(n) * sizeof(float);
-  cl_mem bufA =
-      clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, bytes, host.a.data(), &err);
-  cl_mem bufB =
-      clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, bytes, host.b.data(), &err);
-  cl_mem bufC = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, bytes, nullptr, &err);
+  VectorAddHost vecHost;
+  MatmulHost matHost;
+  cl_mem bufA = nullptr;
+  cl_mem bufB = nullptr;
+  cl_mem bufC = nullptr;
+  size_t outBytes = 0;
+  size_t global1 = 0;
+  size_t local1 = 256;
+  size_t global2[2] = {0, 0};
+  size_t local2[2] = {16, 16};
+  cl_uint workDim = 1;
+  const size_t *globalPtr = nullptr;
+  const size_t *localPtr = nullptr;
+
+  if (isMatmul) {
+    matHost = makeMatmulHost(requireMatmulFp32(workload, "opencl").value());
+    const auto &d = matHost.dims;
+    const size_t aBytes = static_cast<size_t>(d.M) * d.K * sizeof(float);
+    const size_t bBytes = static_cast<size_t>(d.K) * d.N * sizeof(float);
+    outBytes = static_cast<size_t>(d.M) * d.N * sizeof(float);
+    bufA = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, aBytes, matHost.a.data(),
+                          &err);
+    bufB = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, bBytes, matHost.b.data(),
+                          &err);
+    bufC = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, outBytes, nullptr, &err);
+    cl_uint M = d.M, N = d.N, K = d.K;
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufA);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufB);
+    clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufC);
+    clSetKernelArg(kernel, 3, sizeof(cl_uint), &M);
+    clSetKernelArg(kernel, 4, sizeof(cl_uint), &N);
+    clSetKernelArg(kernel, 5, sizeof(cl_uint), &K);
+    global2[0] = ((static_cast<size_t>(d.N) + local2[0] - 1) / local2[0]) * local2[0];
+    global2[1] = ((static_cast<size_t>(d.M) + local2[1] - 1) / local2[1]) * local2[1];
+    workDim = 2;
+    globalPtr = global2;
+    localPtr = local2;
+  } else {
+    const uint32_t n = requireVectorAddFp32(workload, "opencl").value();
+    vecHost = makeVectorAddHost(n);
+    outBytes = static_cast<size_t>(n) * sizeof(float);
+    bufA = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, outBytes, vecHost.a.data(),
+                          &err);
+    bufB = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, outBytes, vecHost.b.data(),
+                          &err);
+    bufC = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, outBytes, nullptr, &err);
+    clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufA);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufB);
+    clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufC);
+    clSetKernelArg(kernel, 3, sizeof(cl_uint), &n);
+    global1 = ((static_cast<size_t>(n) + local1 - 1) / local1) * local1;
+    workDim = 1;
+    globalPtr = &global1;
+    localPtr = &local1;
+  }
+
   if (!bufA || !bufB || !bufC) {
     if (bufA)
       clReleaseMemObject(bufA);
@@ -243,59 +354,11 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
     return Error::make(ErrorCode::ExecutionFailed, "clCreateBuffer failed");
   }
 
-  clSetKernelArg(kernel, 0, sizeof(cl_mem), &bufA);
-  clSetKernelArg(kernel, 1, sizeof(cl_mem), &bufB);
-  clSetKernelArg(kernel, 2, sizeof(cl_mem), &bufC);
-  clSetKernelArg(kernel, 3, sizeof(cl_uint), &n);
-
-  const size_t local = 256;
-  const size_t global = ((static_cast<size_t>(n) + local - 1) / local) * local;
   const int warmupIters = options.benchmark ? workload.execution.warmup : 0;
   const int timedIters = options.benchmark ? workload.execution.iterations : 1;
-
   PowerSampler power;
-
-  // Mode B: CL_PROFILING_COMMAND_START/END on the NDRange event when the queue
-  // was created with CL_QUEUE_PROFILING_ENABLE. Mode A: host wall around
-  // enqueue + clFinish. Transfers remain outside the timed loop.
   TimingSource timingSource =
       profilingQueue ? TimingSource::GpuTimestamp : TimingSource::CpuWall;
-
-  auto dispatchOnce = [&](bool timed) -> Expected<double> {
-    cl_event ev = nullptr;
-    cl_event *evPtr = (timed && profilingQueue) ? &ev : nullptr;
-    const auto t0 = std::chrono::steady_clock::now();
-    cl_int e =
-        clEnqueueNDRangeKernel(queue, kernel, 1, nullptr, &global, &local, 0, nullptr, evPtr);
-    if (e != CL_SUCCESS)
-      return Error::make(ErrorCode::ExecutionFailed, "clEnqueueNDRangeKernel: " + clErr(e));
-
-    if (ev) {
-      e = clWaitForEvents(1, &ev);
-      if (e != CL_SUCCESS) {
-        clReleaseEvent(ev);
-        return Error::make(ErrorCode::ExecutionFailed, "clWaitForEvents: " + clErr(e));
-      }
-      cl_ulong startNs = 0;
-      cl_ulong endNs = 0;
-      const cl_int e0 =
-          clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(startNs), &startNs, nullptr);
-      const cl_int e1 =
-          clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(endNs), &endNs, nullptr);
-      clReleaseEvent(ev);
-      if (e0 == CL_SUCCESS && e1 == CL_SUCCESS && endNs >= startNs) {
-        return static_cast<double>(endNs - startNs) / 1.0e6;
-      }
-      // Profiling probe failed for this iteration — fall back to host wall.
-      timingSource = TimingSource::CpuWall;
-    }
-
-    e = clFinish(queue);
-    if (e != CL_SUCCESS)
-      return Error::make(ErrorCode::ExecutionFailed, "clFinish: " + clErr(e));
-    const auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::milli>(t1 - t0).count();
-  };
 
   auto cleanup = [&]() {
     clReleaseMemObject(bufA);
@@ -308,7 +371,8 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   };
 
   for (int i = 0; i < warmupIters; ++i) {
-    auto w = dispatchOnce(false);
+    auto w = profileOrWall(queue, kernel, workDim, globalPtr, localPtr, false, profilingQueue,
+                           timingSource);
     if (!w) {
       cleanup();
       return w.error();
@@ -318,7 +382,8 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
   std::vector<double> samples;
   samples.reserve(static_cast<size_t>(timedIters));
   for (int i = 0; i < timedIters; ++i) {
-    auto ms = dispatchOnce(true);
+    auto ms = profileOrWall(queue, kernel, workDim, globalPtr, localPtr, true, profilingQueue,
+                            timingSource);
     if (!ms) {
       cleanup();
       return ms.error();
@@ -326,7 +391,8 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
     samples.push_back(ms.value());
   }
 
-  err = clEnqueueReadBuffer(queue, bufC, CL_TRUE, 0, bytes, host.output.data(), 0, nullptr, nullptr);
+  float *outPtr = isMatmul ? matHost.output.data() : vecHost.output.data();
+  err = clEnqueueReadBuffer(queue, bufC, CL_TRUE, 0, outBytes, outPtr, 0, nullptr, nullptr);
   if (err != CL_SUCCESS) {
     cleanup();
     return Error::make(ErrorCode::ExecutionFailed, "clEnqueueReadBuffer: " + clErr(err));
@@ -341,11 +407,15 @@ Expected<RunResult> OpenCLBackend::execute(const Workload &workload, const Devic
     report.driver = dev.driver;
 
   RunResult result =
-      fillVectorAddResult(workload, report, BackendType::OpenCL, "opencl-online-compiler", options,
-                          samples, timingSource, host.reference, host.output);
+      isMatmul ? fillMatmulResult(workload, report, BackendType::OpenCL, "opencl-online-compiler",
+                                  options, samples, timingSource, matHost.reference, matHost.output)
+               : fillVectorAddResult(workload, report, BackendType::OpenCL, "opencl-online-compiler",
+                                     options, samples, timingSource, vecHost.reference,
+                                     vecHost.output);
   result.power = power.stats();
   cleanup();
-  logInfo("runtime", "OpenCL vector_add completed on " + result.deviceName);
+  logInfo("runtime", std::string("OpenCL ") + (isMatmul ? "matmul" : "vector_add") +
+                         " completed on " + result.deviceName);
   return result;
 }
 
